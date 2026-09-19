@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     FestivalKitListView, FestivalKitDetailView,
     UpcomingFestivalsView, RecommendationsView,
+    PujaListView, PujaDetailView,
     AdminFestivalKitListCreateView, AdminFestivalKitDetailView,
     AdminKitItemListCreateView, AdminKitItemDeleteView
 )
@@ -12,6 +13,11 @@ urlpatterns = [
     path('kits/<int:pk>/', FestivalKitDetailView.as_view(), name='kit-detail'),
     path('upcoming/', UpcomingFestivalsView.as_view(), name='upcoming-festivals'),
     path('recommendations/', RecommendationsView.as_view(), name='recommendations'),
+    # Rituals. The literal `pujas/` must precede nothing else here — the slug
+    # pattern is nested under the `pujas/` prefix, so it cannot shadow any other
+    # route in this module.
+    path('pujas/', PujaListView.as_view(), name='puja-list'),
+    path('pujas/<slug:slug>/', PujaDetailView.as_view(), name='puja-detail'),
     # Admin
     path('admin/kits/', AdminFestivalKitListCreateView.as_view(), name='admin-kit-list'),
     path('admin/kits/<int:pk>/', AdminFestivalKitDetailView.as_view(), name='admin-kit-detail'),

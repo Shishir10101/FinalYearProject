@@ -23,6 +23,10 @@ Product · Category · Festival · Puja · Samagri · Ready-made Kit
 Products must be reachable via their festival/ritual relationships and the required-samagri
 they satisfy. A generic shop with a "religious" category bolted on is a failed project.
 
+**All six entry points now exist.** Puja was the last to be built (Day 6): it had no model,
+endpoint or page, and `festival_type` was doing double duty for calendar festivals *and* rites
+of passage. See `Puja` / `PujaItem` in §3 and `docs/FEATURES.md` §1.
+
 Two AI components are **required**, separate from each other:
 1. **Recommendation** — what this user should buy.
 2. **Demand prediction** — how much of a product will be needed.
@@ -52,8 +56,23 @@ Two AI components are **required**, separate from each other:
 
 > **Next.js 16 warning.** `admin-dashboard/AGENTS.md` and `frontend/AGENTS.md` say this Next.js
 > has breaking changes versus older training data. Check `node_modules/next/dist/docs/` before
-> using an unfamiliar API. Concretely: `useSearchParams()` **must** be inside a `<Suspense>`
-> boundary or the production build fails.
+> using an unfamiliar API. Two concrete traps, both of which cost real time:
+>
+> 1. `useSearchParams()` **must** be inside a `<Suspense>` boundary or the production build fails.
+> 2. **`params` and `searchParams` are Promises in a Server Component.** `const { slug } = params`
+>    yields `undefined` — every valid dynamic route would 404, and **the build does not catch
+>    it**, because the mistake is a runtime value, not a syntax error. Always `await`:
+>    ```js
+>    export default async function Page({ params }) {
+>      const { slug } = await params;
+>    }
+>    ```
+>    Confirmed in `node_modules/next/dist/docs/01-app/01-getting-started/03-layouts-and-pages.md`.
+>
+> Also worth knowing: `notFound()` renders the 404 UI but returns a **200** status when the
+> response has already started streaming (a `loading.js` or any `await` opens that boundary).
+> Next injects `<meta name="robots" content="noindex">` as the mitigation. See
+> `dist/docs/01-app/02-guides/streaming.md`.
 
 ---
 
@@ -87,7 +106,7 @@ admin-dashboard/src/lib/api.js → Bearer admin_token (localStorage) ─┤
 | `core` | — | settings, routing, `constants.py` (**`CITY_CHOICES`**), `permissions.py` (**the role system**) | — |
 | `accounts` | `UserProfile` (1:1 `User`) | register, login, JWT refresh, profile, **`role`** | — |
 | `products` | `Area`, `Vendor`, `Category` → `Product` | catalog, search/filter/sort, **vendor ownership**, **delivery areas** | `/api/products/admin/...` |
-| `festivals` | `FestivalKit` → `KitItem` → `Product`, `UpcomingFestival` | kits, festivals, recommendations (`recommender.py`) | `/api/festivals/admin/...` |
+| `festivals` | `FestivalKit` → `KitItem` → `Product`, `UpcomingFestival`, **`Puja` → `PujaItem`** | kits, festivals, **rituals**, recommendations (`recommender.py`) | `/api/festivals/admin/...` |
 | `orders` | `Cart`, `Order` → `OrderItem` | cart, checkout, order history | `/api/orders/admin/...` |
 | `analytics` | `SyntheticSalesRecord` | aggregation + demand forecasting (`forecasting.py`) | `/api/analytics/...` |
 
@@ -112,6 +131,21 @@ truth for who may do what). See §8.
   **Never change those three slugs** without a data migration.
 - `KitItem` has `is_required` — this is the **Required Samagri** mechanism. Use it.
 - `OrderItem` **snapshots** `product_name` and `price`. Never replace this with a live FK read.
+- **`Puja` is the ritual; `FestivalKit` is one purchasable bundle that serves it.** They are
+  deliberately separate. `FESTIVAL_CHOICES` conflates calendar festivals (`dashain`, `tihar`,
+  `shivaratri`) with rites of passage (`bratabandha`, `pasni`, `griha_pravesh`, `shraddha`), and
+  two of its labels even end in "Puja". A ritual can exist with **no** kit — 3 of the 8 seeded
+  ones do — so never assume `Puja.kit` is set. `FestivalKit.puja` is a nullable `SET_NULL` FK.
+- **`PujaItem` and `KitItem` are not redundant.** A kit's optional extras are a merchandising
+  decision; a puja's list is the ritual requirement. The seeded rituals take their lists from
+  the project's own kit data, so the two agree today — that is a seeding choice, not a
+  constraint.
+- **`Puja.kit` is a property that walks `self.kits.all()`, not `.filter()`.** `.filter()` on a
+  related manager bypasses the prefetch cache and issues one query per row, turning a list
+  endpoint into N+1. `test_list_query_count_does_not_grow_with_the_number_of_rituals` guards it.
+- **`seed_pujas` must stay a command, never a data migration.** Products, categories and kits are
+  created by `seed_data`, not by any migration, so a migration seeding puja items would find an
+  empty catalogue on a fresh database and quietly produce rituals with no samagri.
 - `OrderStatusEvent` (Day 4) is an **append-only** log of status transitions. It is written from
   exactly two places — `CheckoutView` and `AdminOrderUpdateView.perform_update()` — and only for a
   genuine change. Never write one for an unchanged status: the customer's timeline fills with
@@ -203,8 +237,9 @@ venv/Scripts/python.exe manage.py runserver 8000      # :8000
 venv/Scripts/python.exe manage.py makemigrations
 venv/Scripts/python.exe manage.py migrate
 venv/Scripts/python.exe manage.py seed_data           # reseeds admin/…/testuser
-venv/Scripts/python.exe manage.py test                # 185 tests
+venv/Scripts/python.exe manage.py test                # 219 tests
 venv/Scripts/python.exe manage.py refresh_festivals   # rebuild the festival calendar
+venv/Scripts/python.exe manage.py seed_pujas          # derive rituals from kit/product data
 venv/Scripts/python.exe manage.py generate_synthetic_sales   # SYNTHETIC forecast data
 
 # Remove scratch rows left by the verifiers (always run after a verification sweep)
@@ -217,6 +252,7 @@ venv/Scripts/python.exe verify_day3.py                # 55 assertions — roles 
 venv/Scripts/python.exe verify_day3b.py               # 41 assertions
 venv/Scripts/python.exe verify_day3c.py               # 128 assertions — full shopping flow
 venv/Scripts/python.exe verify_day4.py                # 88 assertions — history, reset, validation
+venv/Scripts/python.exe verify_day6.py                # 40 assertions — the ritual entry point
 
 # Frontend — :3000
 cd frontend && npm run dev
@@ -588,9 +624,9 @@ Minimum loop for any change:
 Keep it in `docs/CURRENT-STATE.md`.
 
 Django tests live in `backend/<app>/tests.py` plus `backend/core/tests_roles.py`.
-There are now **185**, covering the recommender (30), the forecaster (33), the
-role/scoping system (47), order status history (23), password reset (25) and
-catalogue validation (17). Live suites cover the rest:
+There are now **219**, covering the recommender (30), the forecaster (33), the
+role/scoping system (47), order status history (23), password reset (25),
+catalogue validation (17), the Puja entry point (24) and add-puja-to-cart (10). Live suites cover the rest:
 
 | Suite | Assertions |
 |---|---|
@@ -693,7 +729,7 @@ Full detail in `docs/CURRENT-STATE.md` §Priority. Summary:
 § "What is NOT built"). Before adding anything, re-run the full verification sweep:
 
 ```
-./venv/Scripts/python.exe manage.py test          # 185 unit tests
+./venv/Scripts/python.exe manage.py test          # 219 unit tests
 ./venv/Scripts/python.exe verify_day2.py          # 68 assertions
 ./venv/Scripts/python.exe verify_day3.py          # 55 assertions
 ./venv/Scripts/python.exe verify_day3b.py         # 41 assertions

@@ -10,14 +10,38 @@ Every ✅ below was verified against the running system, not inferred from code.
 ## 1. The domain: Puja Samagri, not a generic marketplace
 
 The differentiator is the festival/Puja structure layered **on top of** ordinary
-e-commerce. Three first-class concepts exist that a generic shop would not have:
+e-commerce. Five first-class concepts exist that a generic shop would not have:
 
 | Concept | Model | Why it matters |
 |---|---|---|
 | **Festival calendar** | `UpcomingFestival` | Drives urgency, recommendations, and demand forecasting |
+| **Ritual (Puja)** | `Puja` → `PujaItem` | Browse by ceremony — the fourth discovery entry point |
 | **Ready-made kit** | `FestivalKit` → `KitItem` | One-click "buy everything for Dashain" |
-| **Required vs optional samagri** | `KitItem.is_required` | Distinguishes "you must have this" from "nice to have" |
+| **Required vs optional samagri** | `is_required` on both `KitItem` and `PujaItem` | Distinguishes "you must have this" from "nice to have" |
 | **Delivery areas** | `Area` (Kathmandu / Lalitpur / Bhaktapur) | Valley-specific logistics, per-area fees |
+
+### The six discovery entry points
+
+`AGENTS.md` §1 requires discovery through six paths, not just a product grid:
+
+| Entry point | Where it lives |
+|---|---|
+| Product | `/products` · `/products/<slug>` |
+| Category | `/products` sidebar |
+| Festival | `/festivals` · the home-page calendar |
+| **Puja (ritual)** | **`/pujas` · `/pujas/<slug>`** |
+| Samagri | Search + the recommender's `staple_samagri` signal |
+| Ready-made Kit | `/festivals` kit grid · add-whole-kit |
+
+**Puja was missing until Day 6** — no model, endpoint or page. The `festival_type`
+enum had been doing double duty: it held `dashain`/`tihar`/`shivaratri`, which are
+calendar festivals, *and* `bratabandha`/`pasni`/`griha_pravesh`/`shraddha`, which
+are rites of passage. Two of its own labels even end in "Puja".
+
+A ritual and a kit answer different questions — *"what does this ceremony need?"*
+versus *"what can I buy in one click?"* — and a ritual can exist before anyone
+assembles a kit for it. **3 of the 8 seeded rituals have no kit**, so that is the
+normal case rather than an edge one.
 
 ---
 
@@ -35,6 +59,8 @@ e-commerce. Three first-class concepts exist that a generic shop would not have:
 | Sort | ✅ | Price / stock / popularity |
 | Festival browse | ✅ | 7 kits; the type filter is derived from the kits, not hardcoded |
 | Festival calendar | ✅ | Soonest-first, `?limit=` up to 50 |
+| **Ritual browse** | ✅ | `/pujas` — 8 rituals, essentials marked, no kit required |
+| **Ritual detail** | ✅ | `/pujas/<slug>` — essential vs optional samagri, add-essentials-to-cart |
 | Area-aware storefront | ✅ | Areas served from `/products/areas/`, not hardcoded |
 | **Shared product card** | ✅ | One `ProductCard` for home / catalogue / recommendations |
 
@@ -211,6 +237,18 @@ Honest list of gaps, so nothing here is mistaken for finished work.
 | JWT revocation on password reset | ⚠️ | Access tokens are stateless and last a day, so a reset does not kill existing sessions |
 | Order history for pre-Day-4 orders | ⚠️ | Backfilled with a single event, so their earlier steps show "not recorded" rather than an invented time |
 | Festival-specific kits | ⚠️ | 3 of the 6 soonest festivals have no kit (Ganesh Chaturthi, Haritalika Teej, Indra Jatra). The home page says so plainly and routes to the recommender |
+| Ritual admin UI | ⚠️ | `Puja` / `PujaItem` are editable in Django admin at `/admin/`; no dashboard screen yet |
+| Add-to-cart from a signed-out card | ⚠️ | `ProductCard`'s `+` attempts the request and shows an error toast. The ritual page instead offers a login link — the shared card should follow suit |
+
+### Fixed on Day 6 (2026-09-19)
+
+| Issue | Detail |
+|---|---|
+| **One of the six required discovery entry points did not exist** | `AGENTS.md` §1 requires Product · Category · Festival · **Puja** · Samagri · Ready-made Kit. Puja had no model, endpoint or page at all. |
+| **`festival_type` conflated festivals and rites of passage** | It held `dashain`/`tihar`/`shivaratri` *and* `bratabandha`/`pasni`/`griha_pravesh`/`shraddha`. Two of its own labels end in "Puja". The `Puja` model untangles them. |
+| **No way to buy what a ceremony needs without a kit** | `POST /orders/cart/add-puja/<id>/` adds the essentials and reports anything it skipped rather than silently under-filling the order. |
+| **An unknown slug fell through to a bare default 404** | Now a styled app-wide `not-found.js`, and `notFound()` for an unknown ritual. |
+| **`params` destructured without `await`** | Next 16 makes `params` a Promise. Destructuring it directly yields `undefined` — every valid ritual would have 404'd, and the build would not have caught it. |
 
 ### Fixed on Day 5 (2026-09-19)
 

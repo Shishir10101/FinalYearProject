@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import FestivalKit, KitItem, UpcomingFestival
+from .models import FestivalKit, KitItem, UpcomingFestival, Puja, PujaItem
 from products.serializers import ProductListSerializer
 
 
@@ -46,6 +46,60 @@ class UpcomingFestivalSerializer(serializers.ModelSerializer):
     class Meta:
         model = UpcomingFestival
         fields = ['id', 'name', 'festival_type', 'festival_type_display', 'date', 'description']
+
+
+class PujaItemSerializer(serializers.ModelSerializer):
+    product_detail = ProductListSerializer(source='product', read_only=True)
+
+    class Meta:
+        model = PujaItem
+        fields = ['id', 'product', 'product_detail', 'quantity', 'is_required']
+
+
+class PujaListSerializer(serializers.ModelSerializer):
+    """Compact ritual representation for the browse grid.
+
+    ``item_count`` and ``required_count`` are read from **queryset annotations**,
+    not counted per row — a SerializerMethodField here would issue two queries per
+    puja on a list endpoint.
+    """
+
+    occasion_display = serializers.CharField(source='get_occasion_type_display', read_only=True)
+    item_count = serializers.IntegerField(read_only=True)
+    required_count = serializers.IntegerField(read_only=True)
+    kit_id = serializers.SerializerMethodField()
+    kit_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Puja
+        fields = ['id', 'name', 'slug', 'description', 'occasion_type',
+                  'occasion_display', 'item_count', 'required_count',
+                  'kit_id', 'kit_name']
+
+    def get_kit_id(self, obj):
+        kit = obj.kit
+        return kit.id if kit else None
+
+    def get_kit_name(self, obj):
+        kit = obj.kit
+        return kit.name if kit else None
+
+
+class PujaDetailSerializer(serializers.ModelSerializer):
+    items = PujaItemSerializer(many=True, read_only=True)
+    occasion_display = serializers.CharField(source='get_occasion_type_display', read_only=True)
+    kit = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Puja
+        fields = ['id', 'name', 'slug', 'description', 'occasion_type',
+                  'occasion_display', 'items', 'kit']
+
+    def get_kit(self, obj):
+        kit = obj.kit
+        if kit is None:
+            return None
+        return FestivalKitListSerializer(kit).data
 
 
 class FestivalKitAdminSerializer(serializers.ModelSerializer):

@@ -301,3 +301,87 @@ class TimelineTimestampTests(StatusHistoryTestBase):
                          [s['key'] for s in second['steps']])
         self.assertEqual([h['status'] for h in first['history']],
                          [h['status'] for h in second['history']])
+
+
+class AddPujaToCartTests(StatusHistoryTestBase):
+    """POST /api/orders/cart/add-puja/<id>/ — shop by ritual.
+
+    The Puja entry point exists so a shopper can buy what a ceremony needs
+    *without* a ready-made kit, which is why this is driven by the ritual's own
+    item list rather than by a kit's.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from festivals.models import Puja, PujaItem
+
+        self.puja = Puja.objects.create(name='Cart Test Ritual', slug='cart-test-ritual')
+        self.required = self.product
+        self.optional = Product.objects.create(
+            name='Optional Extra', description='x', price=Decimal('60'),
+            stock=20, category=self.category,
+        )
+        PujaItem.objects.create(puja=self.puja, product=self.required, quantity=3, is_required=True)
+        PujaItem.objects.create(puja=self.puja, product=self.optional, quantity=1, is_required=False)
+
+    def add(self, puja_id=None):
+        return self.api(self.customer).post(
+            f'/api/orders/cart/add-puja/{puja_id if puja_id is not None else self.puja.id}/',
+            {}, format='json',
+        )
+
+    def test_adds_the_required_items(self):
+        response = self.add()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['added'], 1)
+        self.assertEqual(Cart.objects.get(user=self.customer).quantity, 3)
+
+    def test_does_not_add_optional_items(self):
+        """Silently filling the cart with extras would be putting words in the
+        customer's mouth — the ritual's required list is what gets added."""
+        self.add()
+        self.assertFalse(Cart.objects.filter(user=self.customer, product=self.optional).exists())
+
+    def test_out_of_stock_items_are_skipped_and_reported(self):
+        self.required.stock = 0
+        self.required.save()
+        body = self.add().json()
+        self.assertEqual(body['added'], 0)
+        self.assertIn('skipped', body)
+        self.assertIn(self.required.name, body['skipped'][0])
+        self.assertFalse(Cart.objects.filter(user=self.customer).exists())
+
+    def test_stock_smaller_than_required_quantity_is_skipped(self):
+        self.required.stock = 2  # ritual wants 3
+        self.required.save()
+        self.assertEqual(self.add().json()['added'], 0)
+
+    def test_inactive_products_are_skipped(self):
+        self.required.is_active = False
+        self.required.save()
+        self.assertEqual(self.add().json()['added'], 0)
+
+    def test_merges_into_an_existing_cart_line(self):
+        Cart.objects.create(user=self.customer, product=self.required, quantity=2)
+        self.add()
+        self.assertEqual(Cart.objects.get(user=self.customer).quantity, 5)
+
+    def test_unknown_ritual_is_404(self):
+        self.assertEqual(self.add(puja_id=999999).status_code, 404)
+
+    def test_inactive_ritual_is_404(self):
+        self.puja.is_active = False
+        self.puja.save()
+        self.assertEqual(self.add().status_code, 404)
+
+    def test_requires_authentication(self):
+        client = APIClient()
+        response = client.post(f'/api/orders/cart/add-puja/{self.puja.id}/', {}, format='json')
+        self.assertEqual(response.status_code, 401)
+
+    def test_cannot_put_another_users_cart_at_risk(self):
+        """The cart is always keyed on request.user, never on anything supplied."""
+        other = User.objects.create_user('other_buyer', password='pw12345678')
+        UserProfile.objects.create(user=other, role=ROLE_CUSTOMER)
+        self.add()
+        self.assertFalse(Cart.objects.filter(user=other).exists())

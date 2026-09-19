@@ -2,7 +2,129 @@
 
 Analysis date: 2026-09-18
 Method: full source inspection + live server probing.
-Last updated: 2026-09-19 (Day 5 complete — see §Day 5 Completed below).
+Last updated: 2026-09-19 (Day 6 complete — see §Day 6 Completed below).
+
+---
+
+## Day 6 Completed (2026-09-19) — the missing entry point
+
+**Theme:** `AGENTS.md` §1 requires discovery through six entry points. Five worked.
+The sixth — **Puja** — did not exist in any form.
+
+**Verification: 219 backend unit tests + 420 live assertions, all passing.**
+
+| # | Was | Now |
+|---|-----|-----|
+| 1 | **The Puja entry point did not exist.** No model, no field, no endpoint, no page — the word appeared only in branding copy | **BUILT** — `Puja` + `PujaItem`, `/pujas` and `/pujas/<slug>`, 8 seeded rituals, nav + home + footer links |
+| 2 | **`festival_type` conflated two different things** — calendar festivals (`dashain`, `tihar`, `shivaratri`) *and* rites of passage (`bratabandha`, `pasni`, `griha_pravesh`, `shraddha`). Two of its own labels end in "Puja" | **UNTANGLED** — `Puja` is the ritual, `FestivalKit` is one bundle that serves it |
+| 3 | No way to buy what a ceremony needs **without** a kit | **BUILT** — `POST /orders/cart/add-puja/<id>/` adds the essentials, reports what it skipped |
+| 4 | An unknown slug fell through to a bare default 404 | **FIXED** — styled app-wide `not-found.js`, and `notFound()` for an unknown ritual |
+| 5 | *(found while building)* `const { slug } = params` — Next 16 makes `params` a **Promise** | **FIXED** — every valid ritual would have 404'd, and the build would not have caught it |
+
+### 1. What was actually wrong
+
+`festival_type` was doing double duty. Its seven used values were:
+
+| Value | Actually is |
+|---|---|
+| `dashain`, `tihar`, `shivaratri` | Calendar festivals — arrive on a date |
+| `bratabandha`, `pasni`, `griha_pravesh`, `shraddha` | **Rites of passage** — happen when a family needs them |
+
+And the enum's own labels give the game away: `chhath` → "Chhath **Puja**",
+`saraswati` → "Saraswati **Puja**". A ritual and a purchasable bundle are different
+things, which is why the brief lists **Puja** and **Ready-made Kit** as separate
+entry points.
+
+### 2. The model
+
+| Model | Purpose |
+|---|---|
+| `Puja` | name, slug (uniquified in `save()`), description, `occasion_type`, `is_active` |
+| `PujaItem` | puja → product, `quantity`, `is_required`; `unique_together ('puja','product')` |
+| `FestivalKit.puja` | nullable `SET_NULL` FK — which ritual this bundle serves |
+
+`PujaItem` is **not** redundant with `KitItem`: a kit's optional extras are a
+merchandising decision, a puja's list is the ritual requirement.
+
+**A ritual can exist with no kit**, and 3 of the 8 seeded ones do — `Daily Puja` is
+the clearest case. That is why Puja has to stand alone rather than being a view
+over kits.
+
+### 3. Seeded from the project's own assertions — nothing invented
+
+`manage.py seed_pujas` (idempotent, non-destructive, `--check`):
+
+- the seven kit-backed rituals take their samagri straight from the kit that
+  already ships for them, keeping the same `is_required` split;
+- `Daily Puja` takes the products the recommender's own `STAPLE_CATEGORIES` already
+  designates as "everyday puja essential";
+- each ritual's description is the existing **kit's** description, not new copy.
+
+**It is a command, not a data migration, and that is deliberate.** Products,
+categories and kits are created by `seed_data`, not by any migration. A migration
+seeding puja items would find an empty catalogue on a fresh database and quietly
+produce eight rituals with no samagri — it would look like it worked. `seed_data`
+now calls `seed_pujas` last.
+
+### 4. Frontend
+
+Both pages are **Server Components**, like the home page. The data is entirely
+public, so no token or client boundary is needed — which also makes the output
+verifiable without a browser. Only the add-to-cart button is a client component
+(`AddPujaButton`), because that is the only interactive part.
+
+Verified from the server-rendered HTML:
+
+```
+/pujas/dashain-tika   →  Dashain Tika · Dashain · 6 essential · 2 optional
+                         Sindoor Powder (Red) ×2  Rs. 100.00
+                         Artificial Marigold Garland ×2  Rs. 400.00
+                         Essentials only  6 items  Rs. 1080.00
+                         Ready-made kit: Dashain Puja Complete Kit, 8 items, 10% off
+/pujas/daily-puja     →  Essentials only, and NO kit panel  ✓
+/pujas/unknown        →  the styled 404
+```
+
+An unknown slug returns **200** rather than 404: `notFound()` fires but the response
+has already started streaming, so the status line is committed. This is Next's
+documented behaviour and it injects `<meta name="robots" content="noindex">` as the
+mitigation. The RSC payload carries `NEXT_HTTP_ERROR_FALLBACK;404`.
+
+### 5. Two bugs found while building
+
+**The Next 16 `params` Promise.** `const { slug } = params` yields `undefined`, so
+every valid ritual would have been sent to `notFound()`. The build compiles it
+happily — it is a runtime value, not a syntax error. Caught by checking
+`node_modules/next/dist/docs/` rather than assuming, exactly as §2 of `AGENTS.md`
+instructs. Now recorded there as a named trap.
+
+**A verifier asserted a precondition it had not created.** `verify_day6.py` opened
+with "cart starts empty" and failed — because it was not. The fix was to clear the
+cart first. Same class of mistake as the Day 3.4 test bugs: assert what you
+established, not what you hoped.
+
+### Verification after Day 6
+
+| Suite | Result |
+|---|---|
+| `manage.py test` | **219 pass** (was 185) — 24 for the entry point, 10 for add-puja |
+| `verify_day2.py` | 68/68 — no regression |
+| `verify_day3.py` | 55/55 — no regression |
+| `verify_day3b.py` | 41/41 — no regression |
+| `verify_day3c.py` | 128/128 — no regression |
+| `verify_day4.py` | 88/88 — no regression |
+| `verify_day6.py` | **40/40** |
+| **Live assertions** | **420** |
+
+Frontend builds clean, all puja routes in the compiled manifest, `no-undef` lint
+clean. Database restored to seeded state after purging.
+
+### Docs updated
+
+`DATABASE-DESIGN.md` (`Puja`, `PujaItem`, `FestivalKit.puja`, why a command not a
+migration), `API-SPEC.md` (both endpoints + `add-puja` with its skip reporting),
+`FEATURES.md` (§1 rewritten with the six entry points), `AGENTS.md` (§1, §2 Next
+traps, §3 app map + model facts, §5 commands, §12 counts), `README.md`, this file.
 
 ---
 

@@ -18,8 +18,10 @@ from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
 
+from django.core.management import call_command
+
 from products.models import Category, Product
-from .models import FestivalKit, KitItem, UpcomingFestival
+from .models import FestivalKit, KitItem, Puja, PujaItem, UpcomingFestival
 from .recommender import (
     WEIGHTS,
     RECOMMENDATION_WINDOW_DAYS,
@@ -459,3 +461,230 @@ class UpcomingFestivalsLimitTests(TestCase):
         response = self.client.get('/api/festivals/upcoming/?limit=abc')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()), 5)
+
+
+class PujaEntryPointTests(TestCase):
+    """The ritual (Puja) discovery entry point.
+
+    `AGENTS.md` §1 requires discovery through six entry points — Product ·
+    Category · Festival · **Puja** · Samagri · Ready-made Kit. The Puja one had no
+    model, endpoint or page at all: `festival_type` was doing double duty for
+    calendar festivals *and* rites of passage, and four of its values
+    (bratabandha, pasni, griha_pravesh, shraddha) are ceremonies, not festivals.
+
+    A test that only asserted "the list returns 200" would pass against an
+    endpoint that returned nothing useful, so these assert counts, the
+    required/optional split, and the query behaviour of the list endpoint.
+    """
+
+    def setUp(self):
+        self.category = Category.objects.create(name='Puja Test Cat')
+        self.products = [
+            Product.objects.create(
+                name=f'Puja Product {i}', description='x', price=Decimal('100'),
+                stock=50, category=self.category, popularity_score=i,
+            )
+            for i in range(1, 6)
+        ]
+
+        self.puja = Puja.objects.create(
+            name='Test Ritual', slug='test-ritual', occasion_type='dashain',
+            description='A ritual for testing.',
+        )
+        # 3 required, 2 optional.
+        for i, product in enumerate(self.products):
+            PujaItem.objects.create(
+                puja=self.puja, product=product, quantity=2, is_required=i < 3,
+            )
+
+    # --- model -----------------------------------------------------------
+
+    def test_slug_is_generated_and_uniquified(self):
+        """Same UNIQUE-slug contract as Product / Area / Category / Vendor."""
+        first = Puja.objects.create(name='Griha Pravesh')
+        second = Puja.objects.create(name='Griha Pravesh')
+        self.assertEqual(first.slug, 'griha-pravesh')
+        self.assertEqual(second.slug, 'griha-pravesh-1')
+        self.assertNotEqual(first.slug, second.slug)
+
+    def test_slug_falls_back_when_name_slugifies_to_nothing(self):
+        """`slugify` returns '' for a fully non-Latin name."""
+        puja = Puja.objects.create(name='पूजा')
+        self.assertTrue(puja.slug, 'a blank slug would violate the UNIQUE column')
+        self.assertEqual(puja.slug, 'puja')
+
+    def test_items_come_back_required_first(self):
+        states = list(self.puja.items.values_list('is_required', flat=True))
+        self.assertEqual(states, [True, True, True, False, False])
+
+    def test_a_product_cannot_appear_twice_in_one_ritual(self):
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                PujaItem.objects.create(
+                    puja=self.puja, product=self.products[0], quantity=1,
+                )
+
+    def test_kit_is_none_when_no_kit_exists(self):
+        self.assertIsNone(self.puja.kit)
+
+    def test_kit_is_none_when_the_only_kit_is_inactive(self):
+        FestivalKit.objects.create(
+            name='Inactive Kit', festival_type='dashain', description='x',
+            puja=self.puja, is_active=False,
+        )
+        self.assertIsNone(self.puja.kit)
+
+    def test_kit_is_returned_when_active(self):
+        kit = FestivalKit.objects.create(
+            name='Active Kit', festival_type='dashain', description='x', puja=self.puja,
+        )
+        self.assertEqual(self.puja.kit, kit)
+
+    # --- API -------------------------------------------------------------
+
+    def test_list_is_public(self):
+        response = self.client.get('/api/festivals/pujas/')
+        self.assertEqual(response.status_code, 200)
+
+    def test_list_reports_the_right_counts(self):
+        row = [p for p in self.client.get('/api/festivals/pujas/').json()
+               if p['slug'] == 'test-ritual'][0]
+        self.assertEqual(row['item_count'], 5)
+        self.assertEqual(row['required_count'], 3)
+
+    def test_list_hides_inactive_rituals(self):
+        Puja.objects.create(name='Hidden Ritual', slug='hidden-ritual', is_active=False)
+        slugs = [p['slug'] for p in self.client.get('/api/festivals/pujas/').json()]
+        self.assertNotIn('hidden-ritual', slugs)
+
+    def test_list_names_the_kit_when_there_is_one(self):
+        FestivalKit.objects.create(
+            name='Named Kit', festival_type='dashain', description='x', puja=self.puja,
+        )
+        row = [p for p in self.client.get('/api/festivals/pujas/').json()
+               if p['slug'] == 'test-ritual'][0]
+        self.assertEqual(row['kit_name'], 'Named Kit')
+
+    def test_detail_by_slug(self):
+        response = self.client.get('/api/festivals/pujas/test-ritual/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['name'], 'Test Ritual')
+        self.assertEqual(len(response.json()['items']), 5)
+
+    def test_detail_marks_required_versus_optional(self):
+        items = self.client.get('/api/festivals/pujas/test-ritual/').json()['items']
+        self.assertEqual(sum(1 for i in items if i['is_required']), 3)
+        self.assertEqual(sum(1 for i in items if not i['is_required']), 2)
+
+    def test_detail_carries_the_product_payload(self):
+        items = self.client.get('/api/festivals/pujas/test-ritual/').json()['items']
+        self.assertTrue(all(i['product_detail']['name'] for i in items))
+
+    def test_unknown_slug_is_404(self):
+        self.assertEqual(self.client.get('/api/festivals/pujas/nope/').status_code, 404)
+
+    def test_inactive_ritual_detail_is_404(self):
+        Puja.objects.create(name='Hidden', slug='hidden', is_active=False)
+        self.assertEqual(self.client.get('/api/festivals/pujas/hidden/').status_code, 404)
+
+    def test_list_query_count_does_not_grow_with_the_number_of_rituals(self):
+        """Guards the annotations and the prefetch.
+
+        `Puja.kit` is a property that walks the related manager. Written with
+        `.filter()` it would bypass the prefetch cache and issue one query per
+        ritual; written with `.all()` it reuses it. Counting items per row with a
+        SerializerMethodField would add two more queries each. This asserts the
+        property that actually matters: the cost is flat, not linear.
+        """
+        def count_queries():
+            with self.assertNumQueries(0):
+                pass
+            from django.test.utils import CaptureQueriesContext
+            from django.db import connection
+            with CaptureQueriesContext(connection) as ctx:
+                self.client.get('/api/festivals/pujas/')
+            return len(ctx.captured_queries)
+
+        baseline = count_queries()
+
+        for i in range(10):
+            puja = Puja.objects.create(name=f'Bulk Ritual {i}')
+            for product in self.products:
+                PujaItem.objects.create(puja=puja, product=product)
+            FestivalKit.objects.create(
+                name=f'Bulk Kit {i}', festival_type='dashain', description='x', puja=puja,
+            )
+
+        self.assertEqual(
+            count_queries(), baseline,
+            'the puja list issues more queries as rituals are added — '
+            'the annotations or the prefetch are not doing their job',
+        )
+
+
+class SeedPujasCommandTests(TestCase):
+    """`seed_pujas` derives every item from data the project already asserts.
+
+    It is a command rather than a data migration on purpose: products, categories
+    and kits are created by `seed_data`, not by any migration, so a migration
+    seeding puja items would find an empty catalogue on a fresh database and
+    quietly produce rituals with no samagri.
+    """
+
+    def setUp(self):
+        self.category = Category.objects.create(name='Dhoop & Agarbatti')
+        self.product = Product.objects.create(
+            name='Seeded Staples', description='x', price=Decimal('50'),
+            stock=10, category=self.category, popularity_score=10,
+        )
+        self.kit = FestivalKit.objects.create(
+            name='Seeded Dashain Kit', festival_type='dashain', description='Kit copy.',
+        )
+        KitItem.objects.create(kit=self.kit, product=self.product, quantity=2, is_required=True)
+
+    def test_command_creates_rituals_and_links_the_kit(self):
+        call_command('seed_pujas', verbosity=0)
+        puja = Puja.objects.get(slug='dashain-tika')
+        self.kit.refresh_from_db()
+        self.assertEqual(self.kit.puja, puja)
+
+    def test_command_takes_items_from_the_kit(self):
+        call_command('seed_pujas', verbosity=0)
+        puja = Puja.objects.get(slug='dashain-tika')
+        self.assertEqual(puja.items.count(), 1)
+        self.assertTrue(puja.items.first().is_required)
+
+    def test_ritual_description_is_the_existing_kit_copy(self):
+        """No new copy is invented for the ritual — it reuses the kit's."""
+        call_command('seed_pujas', verbosity=0)
+        self.assertEqual(Puja.objects.get(slug='dashain-tika').description, 'Kit copy.')
+
+    def test_command_is_idempotent(self):
+        call_command('seed_pujas', verbosity=0)
+        before = (Puja.objects.count(), PujaItem.objects.count())
+        call_command('seed_pujas', verbosity=0)
+        self.assertEqual((Puja.objects.count(), PujaItem.objects.count()), before)
+
+    def test_check_mode_writes_nothing(self):
+        call_command('seed_pujas', check=True, verbosity=0)
+        self.assertEqual(Puja.objects.count(), 0)
+
+    def test_daily_puja_has_no_kit(self):
+        """A ritual can exist before anyone assembles a kit for it."""
+        call_command('seed_pujas', verbosity=0)
+        self.assertIsNone(Puja.objects.get(slug='daily-puja').kit)
+
+    def test_command_does_not_delete_existing_items(self):
+        """Non-destructive: an admin's manual edit must survive a re-run."""
+        call_command('seed_pujas', verbosity=0)
+        puja = Puja.objects.get(slug='dashain-tika')
+        extra = Product.objects.create(
+            name='Manually Added', description='x', price=Decimal('10'),
+            stock=5, category=self.category,
+        )
+        PujaItem.objects.create(puja=puja, product=extra, is_required=False)
+
+        call_command('seed_pujas', verbosity=0)
+        self.assertTrue(puja.items.filter(product=extra).exists())

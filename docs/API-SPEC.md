@@ -273,6 +273,32 @@ single setting and stored on the order.
 | `PATCH` | `/cart/update/<id>/` | `{ "quantity": 3 }` |
 | `DELETE` | `/cart/remove/<id>/` | Remove a line |
 | `POST` | `/cart/add-kit/<kit_id>/` | Add every item in a festival kit at once |
+| `POST` | `/cart/add-puja/<puja_id>/` | Add a ritual's **essential** items *(added Day 6)* |
+
+### `POST /cart/add-puja/<puja_id>/`
+
+Mirrors `add-kit`, but driven by the ritual's own item list rather than a kit's —
+which is the point of Puja being a separate entry point: you can shop by ceremony
+even when no kit exists for it.
+
+```json
+{ "message": "6 items added to cart for \"Dashain Tika\"", "added": 6 }
+```
+
+Anything that could not be added is **reported**, never silently dropped:
+
+```json
+{
+  "message": "4 items added to cart for \"Dashain Tika\"",
+  "added": 4,
+  "skipped": ["Brass Diyo (Oil Lamp)", "Mustard Oil for Diyo (500ml)"],
+  "warning": "Some items could not be added because they are out of stock: …"
+}
+```
+
+**Only required items are added.** Optional extras are a merchandising choice, and
+putting them in the cart on the customer's behalf would be putting words in their
+mouth. Unknown or inactive ritual → **404**. No token → **401**.
 
 ### Checkout and history
 
@@ -356,7 +382,75 @@ An order containing two of a vendor's products appears **once** (`.distinct()`).
 | `GET` | `/kits/` | Public | Festival kits |
 | `GET` | `/kits/<id>/` | Public | Kit detail with items and computed price |
 | `GET` | `/upcoming/` | Public | Festivals from today forward. `?limit=` (default 5, max 50) |
+| `GET` | `/pujas/` | Public | **Rituals** — the fourth discovery entry point |
+| `GET` | `/pujas/<slug>/` | Public | One ritual with the samagri it calls for |
 | `GET` | `/recommendations/` | Public | **Ranked, explainable recommendations** |
+
+### `GET /pujas/` and `GET /pujas/<slug>/` *(added Day 6)*
+
+`AGENTS.md` §1 requires discovery through six entry points — Product · Category ·
+Festival · **Puja** · Samagri · Ready-made Kit. The Puja one had no model,
+endpoint or page; `festival_type` was doing double duty for calendar festivals
+*and* rites of passage.
+
+Not paginated — the ritual list is short and renders as a single grid.
+
+```json
+[
+  {
+    "id": 2,
+    "name": "Dashain Tika",
+    "slug": "dashain-tika",
+    "description": "Everything you need for Dashain puja — tika, garlands, diyo, and offerings. …",
+    "occasion_type": "dashain",
+    "occasion_display": "Dashain",
+    "item_count": 8,
+    "required_count": 6,
+    "kit_id": 1,
+    "kit_name": "Dashain Puja Complete Kit"
+  },
+  {
+    "id": 1,
+    "name": "Daily Puja",
+    "slug": "daily-puja",
+    "occasion_type": "other",
+    "item_count": 21,
+    "required_count": 21,
+    "kit_id": null,
+    "kit_name": null
+  }
+]
+```
+
+`kit_id` is `null` when no ready-made kit exists — which is the normal state, not
+an error. The six entry points name Puja and Ready-made Kit **separately**, so a
+ritual must be usable without one.
+
+`GET /pujas/<slug>/` adds `items[]` (with `product_detail`, `quantity`,
+`is_required`) and a nested `kit` object when one exists:
+
+```json
+{
+  "id": 2, "name": "Dashain Tika", "slug": "dashain-tika",
+  "occasion_type": "dashain", "occasion_display": "Dashain",
+  "items": [
+    { "id": 9, "product": 5, "quantity": 2, "is_required": true,
+      "product_detail": { "id": 5, "name": "Sindoor Powder (Red)", "price": "50.00", … } }
+  ],
+  "kit": { "id": 1, "name": "Dashain Puja Complete Kit", "total_price": "1152.00", … }
+}
+```
+
+Items come back **essentials first** (ordering `('-is_required', 'id')`).
+`item_count` / `required_count` are queryset annotations, not per-row counts.
+
+Unknown slug → **404**. Inactive ritual → **404**. Both are asserted live.
+
+> **Frontend note.** `/pujas` and `/pujas/[slug]` are Server Components, so an
+> unknown slug renders the styled 404 with a **200** status when the response has
+> already started streaming — Next's documented behaviour. It injects
+> `<meta name="robots" content="noindex">` as the mitigation. The RSC payload still
+> carries `NEXT_HTTP_ERROR_FALLBACK;404`.
 
 ### `GET /upcoming/`
 

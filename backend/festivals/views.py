@@ -1,14 +1,15 @@
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.db.models import Count, Q
 from django.utils import timezone
 from datetime import timedelta
-from .models import FestivalKit, KitItem, UpcomingFestival
+from .models import FestivalKit, KitItem, UpcomingFestival, Puja, PujaItem
 from products.models import Product
 from .serializers import (
     FestivalKitListSerializer, FestivalKitDetailSerializer,
     UpcomingFestivalSerializer, FestivalKitAdminSerializer,
-    KitItemAdminSerializer
+    KitItemAdminSerializer, PujaListSerializer, PujaDetailSerializer,
 )
 from products.serializers import ProductListSerializer
 from .recommender import Recommender, serialize_recommendations
@@ -65,6 +66,49 @@ class UpcomingFestivalsView(generics.ListAPIView):
             date__gte=today,
             is_active=True
         )[:self.get_limit()]
+
+
+class PujaListView(generics.ListAPIView):
+    """Browse by ritual — the fourth discovery entry point.
+
+    ``AGENTS.md`` §1 requires six entry points (Product · Category · Festival ·
+    Puja · Samagri · Ready-made Kit). This one had no model, endpoint or page; the
+    ``festival_type`` enum was doing double duty for festivals *and* rites of
+    passage, and four of its seven used values (bratabandha, pasni, griha_pravesh,
+    shraddha) are ceremonies rather than calendar events.
+
+    No pagination: the ritual list is short and the storefront renders it as a
+    single grid.
+    """
+
+    serializer_class = PujaListSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = None
+
+    def get_queryset(self):
+        # Counted in the database rather than per row, and `kits` prefetched so
+        # `Puja.kit` reads the cache instead of querying once per puja.
+        return (
+            Puja.objects.filter(is_active=True)
+            .annotate(
+                item_count=Count('items', distinct=True),
+                required_count=Count('items', filter=Q(items__is_required=True), distinct=True),
+            )
+            .prefetch_related('kits')
+        )
+
+
+class PujaDetailView(generics.RetrieveAPIView):
+    """One ritual, with the samagri it calls for and its ready-made kit if any."""
+
+    serializer_class = PujaDetailSerializer
+    permission_classes = [permissions.AllowAny]
+    lookup_field = 'slug'
+
+    def get_queryset(self):
+        return Puja.objects.filter(is_active=True).prefetch_related(
+            'items__product__category', 'kits',
+        )
 
 
 class RecommendationsView(APIView):

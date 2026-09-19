@@ -161,6 +161,58 @@ class CartAddKitView(APIView):
         return Response({'message': f'{added} items added to cart from kit "{kit.name}"'})
 
 
+class CartAddPujaView(APIView):
+    """Add every product a ritual calls for.
+
+    Mirrors ``CartAddKitView``, but driven by the ritual's own item list rather
+    than a kit's — which is the point of having Puja as a separate discovery
+    entry point: a shopper can shop by ceremony even when no kit exists for it.
+
+    Only *required* items are added. Optional extras are a merchandising choice,
+    and silently putting them in the cart would be putting words in the
+    customer's mouth.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, puja_id):
+        from festivals.models import Puja
+        try:
+            puja = Puja.objects.get(id=puja_id, is_active=True)
+        except Puja.DoesNotExist:
+            return Response({'error': 'Ritual not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        added = 0
+        skipped = []
+        for puja_item in puja.items.select_related('product').filter(is_required=True):
+            product = puja_item.product
+            if not product.is_active or product.stock < puja_item.quantity:
+                # Report what was left out instead of quietly adding a short order.
+                skipped.append(product.name)
+                continue
+
+            cart_item, created = Cart.objects.get_or_create(
+                user=request.user, product=product,
+                defaults={'quantity': puja_item.quantity}
+            )
+            if not created:
+                cart_item.quantity += puja_item.quantity
+                cart_item.save()
+            added += 1
+
+        payload = {
+            'message': f'{added} items added to cart for "{puja.name}"',
+            'added': added,
+        }
+        if skipped:
+            payload['skipped'] = skipped
+            payload['warning'] = (
+                'Some items could not be added because they are out of stock: '
+                + ', '.join(skipped)
+            )
+        return Response(payload)
+
+
 class CheckoutView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

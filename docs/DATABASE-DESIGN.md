@@ -298,6 +298,68 @@ Puja shop rather than a generic marketplace.
 silently dead. Rebuilt by the idempotent `refresh_festivals` command, which
 deactivates (never deletes) stale rows.
 
+`/festivals/upcoming/` was also capped at a hardcoded `[:5]`, so five of the ten
+active festivals could not be reached through the API at all. It is now `?limit=`
+(default 5, max 50).
+
+#### `Puja` *(added Day 6)*
+
+The ritual entry point. `AGENTS.md` §1 requires discovery through six paths —
+Product · Category · Festival · **Puja** · Samagri · Ready-made Kit — and this one
+had no model, endpoint or page.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | PK | |
+| `name` | varchar(120) | |
+| `slug` | slug, UNIQUE | Uniquified in `save()` (`base`, `base-1`, …) |
+| `description` | text | |
+| `occasion_type` | varchar(30) | `FESTIVAL_CHOICES`, blank allowed — links a ritual to the same vocabulary kits and the calendar use |
+| `is_active` | bool | |
+| `created_at` | datetime | |
+
+**Why a separate model.** `FESTIVAL_CHOICES` conflates two different things. It
+holds `dashain`, `tihar` and `shivaratri`, which are **calendar festivals** that
+arrive on a date, and it also holds `bratabandha`, `pasni`, `griha_pravesh` and
+`shraddha`, which are **rites of passage** performed when a family needs them. Two
+of the enum's own labels even end in "Puja" (`chhath` → "Chhath Puja",
+`saraswati` → "Saraswati Puja").
+
+A `Puja` is the ritual; a `FestivalKit` is one purchasable bundle that serves it.
+They answer different questions — *"what does this ritual need?"* versus *"what can
+I buy in one click?"* — and a ritual can exist before anyone assembles a kit for
+it, which is the normal state of affairs. `Daily Puja` is exactly that case.
+
+#### `PujaItem` *(added Day 6)*
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | PK | |
+| `puja` | FK → `Puja`, CASCADE | |
+| `product` | FK → `Product`, CASCADE | `unique_together ('puja', 'product')` |
+| `quantity` | positive int | |
+| `is_required` | bool | Same required-samagri distinction `KitItem` makes |
+
+Ordering is `('-is_required', 'id')` — essentials first, then a stable tiebreak so
+the list is deterministic.
+
+**Not redundant with `KitItem`.** A kit is a bundle a shop chooses to sell, and its
+optional extras are a merchandising decision; a puja's list is the ritual
+requirement. The seeded rituals take their lists from the project's own kit data,
+so the two agree today — that is a seeding choice, not a constraint.
+
+#### `FestivalKit.puja` *(added Day 6)*
+
+Nullable FK → `Puja`, `SET_NULL`. Lets a sellable bundle declare which ritual it
+serves. Nullable so the seven existing kits kept working untouched, and `SET_NULL`
+so deleting a ritual never deletes a sellable kit.
+
+**Seeded by a command, not a migration.** `seed_pujas` is idempotent and
+non-destructive. It must be a command: products, categories and kits are created
+by `seed_data`, not by any migration, so a data migration seeding puja items would
+find an empty catalogue on a fresh database and quietly produce rituals with no
+samagri — it would look like it worked. `seed_data` calls `seed_pujas` last.
+
 ---
 
 ### 3.5 `analytics` — demand forecasting

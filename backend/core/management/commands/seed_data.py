@@ -1,4 +1,5 @@
 from django.core.management.base import BaseCommand
+from django.core.management import call_command
 from django.contrib.auth.models import User
 from accounts.models import UserProfile
 from products.models import Category, Product
@@ -340,6 +341,11 @@ class Command(BaseCommand):
                 order.save()
 
             self.stdout.write(self.style.SUCCESS('Created sample orders'))
+
+        # Rituals are derived from the kits and products seeded above, so they must
+        # run last. Without this a fresh install has no Puja entry point at all —
+        # one of the six discovery paths AGENTS.md requires.
+        call_command('seed_pujas')
 
         self.stdout.write(self.style.SUCCESS('Database seeded successfully!'))
 
