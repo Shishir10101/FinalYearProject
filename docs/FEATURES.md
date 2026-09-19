@@ -96,6 +96,8 @@ HOME → CATEGORY/FESTIVAL → PRODUCT LIST → DETAILS → ADD TO CART
 | Profile view + edit | ✅ |
 | Area dropdown from the DB | ✅ |
 | **Password reset** | ✅ Real token flow — works once, expires in 24 h, no account enumeration |
+| **Sign out everywhere** | ✅ `POST /auth/logout-all/` revokes every token for the account |
+| **Token revocation** | ✅ A reset ends existing sessions, including unexpired access tokens |
 | Wishlist / reviews | ❌ Not built (P1) |
 
 ### 2.4 Recommendations
@@ -234,11 +236,18 @@ Honest list of gaps, so nothing here is mistaken for finished work.
 | Real sales data | ❌ | Forecast trains on synthetic data; order volume is too low to train on |
 | Search relevance tuning | ⚠️ | `icontains` matching; no fuzzy or typo tolerance |
 | Image upload UI | ⚠️ | The field is open in the admin serializer; no upload widget |
-| JWT revocation on password reset | ⚠️ | Access tokens are stateless and last a day, so a reset does not kill existing sessions |
 | Order history for pre-Day-4 orders | ⚠️ | Backfilled with a single event, so their earlier steps show "not recorded" rather than an invented time |
 | Festival-specific kits | ⚠️ | 3 of the 6 soonest festivals have no kit (Ganesh Chaturthi, Haritalika Teej, Indra Jatra). The home page says so plainly and routes to the recommender |
 | Ritual admin UI | ⚠️ | `Puja` / `PujaItem` are editable in Django admin at `/admin/`; no dashboard screen yet |
-| Add-to-cart from a signed-out card | ⚠️ | `ProductCard`'s `+` attempts the request and shows an error toast. The ritual page instead offers a login link — the shared card should follow suit |
+
+### Fixed on Day 7 (2026-09-19)
+
+| Issue | Detail |
+|---|---|
+| **A password reset did not end existing sessions** | Documented as a known limitation on Day 4: access tokens are stateless and last a day, so a stolen one kept working. Now every token carries a version claim checked on every request, and a reset bumps it. |
+| **`token/refresh/` would keep serving a revoked user** | Found by the test suite. The refresh endpoint never goes through DRF's authentication classes, so a version check in the authentication class alone left it answering 200 and minting access tokens. |
+| **No remedy for "someone else is logged in as me"** | Logging out only discards the token the current device holds. `POST /auth/logout-all/` revokes everything. |
+| **A signed-out visitor got "Session expired. Please login again."** | `ProductCard`'s `+` sent the request regardless. It now routes to login and returns to the product afterwards. |
 
 ### Fixed on Day 6 (2026-09-19)
 

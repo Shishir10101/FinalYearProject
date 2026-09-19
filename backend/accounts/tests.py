@@ -25,6 +25,7 @@ from rest_framework.test import APIClient
 
 from .models import UserProfile
 from .password_reset import build_reset_url, encode_uid, make_token
+from .tokens import TOKEN_VERSION_CLAIM as TOKEN_VERSION_CLAIM_FOR_TEST
 
 LOCOLMEM = 'django.core.mail.backends.locmem.EmailBackend'
 REQUEST_URL = '/api/auth/password-reset/'
@@ -278,3 +279,230 @@ class ResetLinkHelperTests(PasswordResetTestBase):
         """A visible pk would make account ids trivially guessable."""
         encoded = encode_uid(self.user)
         self.assertNotEqual(encoded, str(self.user.pk))
+
+
+class TokenRevocationTests(TestCase):
+    """A password reset must end existing sessions, not just change the password.
+
+    JWTs are stateless: nothing can un-issue one. SimpleJWT's `token_blacklist` app
+    only covers *refresh* tokens, so it cannot help here — an access token stays
+    valid for its full day. The fix is a version claim checked on every request.
+
+    A test that only asserted "the password changed" would pass against the old
+    implementation, which left a stolen token working for up to 24 hours. These
+    tests assert that the old token stops working, which the old code could not do.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            'revoke_me', email='revoke@example.com', password=OLD_PASSWORD,
+        )
+        UserProfile.objects.create(user=self.user)
+        self.client = APIClient()
+
+    def login(self, password=OLD_PASSWORD, username='revoke_me'):
+        """Returns (status_code, body) for a login attempt."""
+        response = self.client.post('/api/auth/login/', {
+            'username': username, 'password': password,
+        }, format='json')
+        return response.status_code, response.json()
+
+    def as_user(self, token):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        return client
+
+    def reset_password(self):
+        """Drive the real reset flow and return the uid/token pair used."""
+        response = self.client.post('/api/auth/password-reset/',
+                                    {'email': 'revoke@example.com'}, format='json')
+        uid, token = split_reset_url(response.json()['reset_url'])
+        self.client.post(CONFIRM_URL, {
+            'uid': uid, 'token': token,
+            'new_password': NEW_PASSWORD, 'new_password2': NEW_PASSWORD,
+        }, format='json')
+        return uid, token
+
+    # --- the claim ------------------------------------------------------
+
+    def test_login_tokens_carry_the_version_claim(self):
+        from .tokens import TOKEN_VERSION_CLAIM
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        _, body = self.login()
+        decoded = AccessToken(body['access'])
+        self.assertIn(TOKEN_VERSION_CLAIM, decoded)
+        self.assertEqual(decoded[TOKEN_VERSION_CLAIM], 0)
+
+    def test_a_fresh_token_authenticates(self):
+        _, body = self.login()
+        response = self.as_user(body['access']).get('/api/auth/profile/')
+        self.assertEqual(response.status_code, 200)
+
+    def test_the_claim_cannot_be_forged(self):
+        """The version is inside the signed payload, so it is not client-editable."""
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        _, body = self.login()
+        forged = AccessToken(body['access'])
+        forged[TOKEN_VERSION_CLAIM_FOR_TEST] = 999
+        response = self.as_user(str(forged)).get('/api/auth/profile/')
+        # Re-signing requires the SECRET_KEY; the tampered token fails verification.
+        self.assertEqual(response.status_code, 401)
+
+    def test_legacy_tokens_without_the_claim_still_work(self):
+        """Deploying this must not sign everyone out.
+
+        A token minted before the claim existed reads as version 0, which matches
+        the default, so it stays valid until a deliberate bump.
+        """
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        legacy = AccessToken.for_user(self.user)
+        self.assertNotIn(TOKEN_VERSION_CLAIM_FOR_TEST, legacy)
+        response = self.as_user(str(legacy)).get('/api/auth/profile/')
+        self.assertEqual(response.status_code, 200)
+
+    # --- revocation -----------------------------------------------------
+
+    def test_revoke_tokens_invalidates_an_outstanding_access_token(self):
+        from .tokens import revoke_tokens
+
+        _, body = self.login()
+        self.assertEqual(self.as_user(body['access']).get('/api/auth/profile/').status_code, 200)
+
+        revoke_tokens(self.user)
+
+        response = self.as_user(body['access']).get('/api/auth/profile/')
+        self.assertEqual(response.status_code, 401)
+        # DRF renders `detail`, not the exception's `code`, so assert the wording
+        # the client actually receives.
+        self.assertIn('session has ended', response.json()['detail'].lower())
+
+    def test_password_reset_invalidates_an_outstanding_access_token(self):
+        """The scenario that matters: the password leaked, so the token must die."""
+        _, body = self.login()
+        self.reset_password()
+        response = self.as_user(body['access']).get('/api/auth/profile/')
+        self.assertEqual(response.status_code, 401)
+
+    def test_password_reset_invalidates_the_refresh_token_too(self):
+        """Otherwise the holder mints a fresh access token and carries on."""
+        _, body = self.login()
+        self.reset_password()
+        response = self.client.post('/api/auth/token/refresh/',
+                                    {'refresh': body['refresh']}, format='json')
+        self.assertEqual(response.status_code, 401)
+
+    def test_login_again_after_a_reset_works(self):
+        self.reset_password()
+        status, body = self.login(NEW_PASSWORD)
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            self.as_user(body['access']).get('/api/auth/profile/').status_code, 200
+        )
+
+    def test_revoking_one_user_does_not_touch_another(self):
+        from .tokens import revoke_tokens
+
+        other = User.objects.create_user('bystander', password=OLD_PASSWORD)
+        UserProfile.objects.create(user=other)
+        _, other_body = self.login(OLD_PASSWORD, username='bystander')
+
+        revoke_tokens(self.user)
+
+        self.assertEqual(
+            self.as_user(other_body['access']).get('/api/auth/profile/').status_code, 200
+        )
+
+    def test_revocation_is_monotonic(self):
+        from .tokens import revoke_tokens, token_version_for
+
+        self.assertEqual(token_version_for(self.user), 0)
+        self.assertEqual(revoke_tokens(self.user), 1)
+        self.assertEqual(revoke_tokens(self.user), 2)
+        self.user.refresh_from_db()
+        self.assertEqual(token_version_for(self.user), 2)
+
+    def test_revoke_creates_a_profile_when_one_is_missing(self):
+        """`update()` against a missing row silently matches nothing.
+
+        That exact bug once left `vendor1` with no profile, so revocation must not
+        depend on a profile already existing — failing to revoke is a security
+        failure, not a cosmetic one.
+        """
+        from .tokens import revoke_tokens, token_version_for
+
+        UserProfile.objects.filter(user=self.user).delete()
+        self.assertEqual(token_version_for(self.user), 0)
+
+        revoke_tokens(self.user)
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.profile.token_version, 1)
+
+    def test_a_user_with_no_profile_can_still_authenticate(self):
+        """The version reads as 0 rather than exploding on a missing relation."""
+        UserProfile.objects.filter(user=self.user).delete()
+        _, body = self.login()
+        self.assertEqual(
+            self.as_user(body['access']).get('/api/auth/profile/').status_code, 200
+        )
+
+    # --- logout everywhere ----------------------------------------------
+
+    def test_logout_all_revokes_the_callers_tokens(self):
+        _, body = self.login()
+        client = self.as_user(body['access'])
+
+        response = client.post('/api/auth/logout-all/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['token_version'], 1)
+
+        # The token that made the request is dead too.
+        self.assertEqual(client.get('/api/auth/profile/').status_code, 401)
+
+    def test_logout_all_requires_authentication(self):
+        self.assertEqual(APIClient().post('/api/auth/logout-all/').status_code, 401)
+
+    def test_logout_all_leaves_other_users_alone(self):
+        other = User.objects.create_user('bystander2', password=OLD_PASSWORD)
+        UserProfile.objects.create(user=other)
+        _, other_body = self.login(OLD_PASSWORD, username='bystander2')
+
+        _, body = self.login()
+        self.as_user(body['access']).post('/api/auth/logout-all/')
+
+        self.assertEqual(
+            self.as_user(other_body['access']).get('/api/auth/profile/').status_code, 200
+        )
+
+    def test_every_role_gets_the_claim(self):
+        from core.permissions import ROLE_ADMIN, ROLE_VENDOR
+        from .tokens import TOKEN_VERSION_CLAIM
+
+        for username, role in [('admin_tv', ROLE_ADMIN), ('vendor_tv', ROLE_VENDOR)]:
+            user = User.objects.create_user(username, password=OLD_PASSWORD, is_staff=True)
+            UserProfile.objects.create(user=user, role=role)
+            _, body = self.login(OLD_PASSWORD, username=username)
+            from rest_framework_simplejwt.tokens import AccessToken
+            self.assertIn(TOKEN_VERSION_CLAIM, AccessToken(body['access']))
+            self.assertEqual(
+                self.as_user(body['access']).get('/api/auth/profile/').status_code, 200
+            )
+
+    def test_reset_message_says_sessions_were_ended(self):
+        """The customer should be told, not left guessing why they were signed out."""
+        self.reset_password()
+        status, body = self.login(NEW_PASSWORD)
+        self.assertEqual(status, 200)
+        # Confirm the reset response wording too.
+        response = self.client.post('/api/auth/password-reset/',
+                                    {'email': 'revoke@example.com'}, format='json')
+        uid, token = split_reset_url(response.json()['reset_url'])
+        confirm = self.client.post(CONFIRM_URL, {
+            'uid': uid, 'token': token,
+            'new_password': 'AnotherPass789', 'new_password2': 'AnotherPass789',
+        }, format='json')
+        self.assertIn('sessions', confirm.json()['message'].lower())

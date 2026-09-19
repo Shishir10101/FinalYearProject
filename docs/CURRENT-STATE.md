@@ -2,7 +2,113 @@
 
 Analysis date: 2026-09-18
 Method: full source inspection + live server probing.
-Last updated: 2026-09-19 (Day 6 complete — see §Day 6 Completed below).
+Last updated: 2026-09-19 (Day 7 complete — see §Day 7 Completed below).
+
+---
+
+## Day 7 Completed (2026-09-19) — closing the one security gap we had documented
+
+**Theme:** Day 4 recorded a limitation instead of fixing it. This fixes it.
+
+> Day 4, verbatim: *"Existing JWTs survive a password reset. Access tokens are stateless and
+> last a day, so a stolen token keeps working until it expires. Real revocation needs a
+> blacklist or a per-user token version — deliberately out of scope."*
+
+That is a real hole: the usual reason to reset a password is that somebody else may have it.
+A reset that leaves their token alive for 24 hours is not a reset.
+
+**Verification: 236 backend unit tests + 450 live assertions, all passing.**
+
+| # | Was | Now |
+|---|-----|-----|
+| 1 | A password reset changed the password but **left every issued token working** | **FIXED** — every token carries a `tv` claim checked on every request; a reset bumps it |
+| 2 | *(found by the tests)* `token/refresh/` kept serving a revoked user | **FIXED** — the refresh endpoint never goes through DRF's authentication classes, so it needed its own check |
+| 3 | No remedy for "I think someone else is logged in as me" | **BUILT** — `POST /auth/logout-all/` |
+| 4 | A signed-out visitor clicking `+` got *"Session expired. Please login again."* | **FIXED** — `ProductCard` routes to login and returns to the product afterwards |
+
+### 1. Why not `token_blacklist`
+
+The obvious answer is SimpleJWT's blacklist app. It is the wrong tool: it blacklists
+**refresh** tokens, so the access token derived from a blacklisted one keeps working until its
+own expiry. The threat here is precisely the outstanding access token, which lives for a day.
+
+A version claim is checked on *every* request, which is the only thing that can end an access
+token early without a server-side session store.
+
+### 2. How it works
+
+| Piece | Role |
+|---|---|
+| `UserProfile.token_version` | The counter. Bumping it invalidates everything issued before the bump, for that user only |
+| `tv` claim | Stamped on every token at login, and carried onto derived access tokens |
+| `VersionedJWTAuthentication` | The project's `DEFAULT_AUTHENTICATION_CLASSES`. Compares the claim on every request, 401 on mismatch |
+| `VersionedTokenRefreshSerializer` | The same check at `token/refresh/` |
+| `revoke_tokens(user)` | Bumps the version. Called by password reset and `logout-all` |
+
+**Backwards compatible:** tokens minted before this existed carry no claim and read as version
+0, which matches the default, so deploying it signs nobody out. Asserted by
+`test_legacy_tokens_without_the_claim_still_work`.
+
+### 3. The bug the tests caught
+
+The first implementation only guarded `VersionedJWTAuthentication`. `test_password_reset_invalidates_the_refresh_token_too`
+then failed with `200 != 401` — because **the refresh endpoint does not go through DRF's
+authentication classes at all**. It validates the refresh token itself. So a revoked user's
+refresh token was still accepted and still minted access tokens.
+
+Those tokens would have been rejected on use, but the endpoint answering `200` is both
+misleading and lets a holder keep trying. Fixed with `VersionedTokenRefreshSerializer`.
+
+This is exactly the kind of hole a happy-path test misses: "the reset worked" was true, and the
+session was still alive.
+
+### 4. What a bump does *not* do
+
+Stated plainly, because it would be easy to overclaim: bumping invalidates **tokens**. It does
+not touch anything that never had one. A password hash changing does not by itself revoke
+anything — `revoke_tokens()` has to be called. There is no server-side session table, so
+"sign out all devices" means "invalidate all issued credentials", which is the same practical
+outcome but worth being precise about.
+
+### 5. Verifier hygiene fixed along the way
+
+Running the sweep exposed two verifier bugs of my own, both of which made a working product
+look broken:
+
+- **Fixed probe usernames collided on a re-run.** `register` returned 400 "already exists" and
+  the script silently skipped its most important section. Now unique per run
+  (`verifyday4probe<hex>`), with `purge_verification_users` matching the `verifyday` prefix so
+  they are still cleaned up.
+- **The password-reset throttle (10/min per IP) is shared across verifiers.** Running the
+  sweep back to back exhausted it, and `verify_day4` reported **10 failures that were all the
+  same 429**. A rate limit doing its job is not a product bug. The reset section now detects
+  the throttle once and reports a single clearly-labelled **SKIP** rather than ten false
+  failures. Verified by running it twice in a row: `71 passed, 0 failed, 2 skipped` both times.
+
+Both are the same lesson as the Day 3.4 test bugs: a verifier must assert what it established,
+and must not blame the product for its own environment.
+
+### Verification after Day 7
+
+| Suite | Result |
+|---|---|
+| `manage.py test` | **236 pass** (was 219) — 17 new for revocation |
+| `verify_day2.py` | 68/68 — no regression |
+| `verify_day3.py` | 55/55 — no regression |
+| `verify_day3b.py` | 41/41 — no regression |
+| `verify_day3c.py` | 128/128 — no regression |
+| `verify_day4.py` | 88/88 (needs ~1 min after another reset-heavy run — see above) |
+| `verify_day6.py` | 40/40 — no regression |
+| `verify_day7.py` | **30/30** |
+| **Live assertions** | **450** |
+
+Frontend builds clean. Database restored to seeded state after purging.
+
+### Docs updated
+
+`AGENTS.md` (§7 new "Token revocation" subsection, §13 the caveat replaced with the contract),
+`API-SPEC.md` (both endpoints, the response wording, and the refresh-endpoint note),
+`FEATURES.md` (the gap row removed), `README.md`, this file.
 
 ---
 

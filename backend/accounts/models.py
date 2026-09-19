@@ -25,6 +25,20 @@ class UserProfile(models.Model):
         help_text='Legacy flag, superseded by `role`. Kept so existing data is not lost.',
     )
 
+    # Every JWT this user is issued carries this number. Bumping it invalidates
+    # every token already in circulation for that user, including access tokens
+    # that have not yet expired.
+    #
+    # This exists because JWTs are stateless: nothing else can end a session early.
+    # SimpleJWT's `token_blacklist` app only covers *refresh* tokens, so it cannot
+    # help here — an access token stays valid for its full lifetime (one day)
+    # regardless. A version claim is checked on every request, which is the only
+    # way to revoke one. See `accounts/tokens.py`.
+    token_version = models.PositiveIntegerField(
+        default=0,
+        help_text='Bump to revoke every token issued to this user so far.',
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

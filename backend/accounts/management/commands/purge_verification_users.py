@@ -19,9 +19,11 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 # Prefix, not "contains": a prefix cannot accidentally match a real account.
+# Deliberately broad enough to cover every verifier (verifyday4probe,
+# verifyday7probe, …) so a new one does not silently leave an account behind.
 USERNAME_PREFIXES = [
-    'verifyday4',
-    'verify_day4',
+    'verifyday',
+    'verify_day',
 ]
 
 # Belt and braces — these must never be removed, whatever the prefixes say.

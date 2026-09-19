@@ -104,7 +104,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # REST Framework
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        # Not the stock JWTAuthentication: this subclass also enforces the token
+        # version claim, which is what lets a password reset revoke tokens that
+        # are already in circulation. See accounts/tokens.py.
+        'accounts.tokens.VersionedJWTAuthentication',
     ),
     'DEFAULT_FILTER_BACKENDS': [
         'django_filters.rest_framework.DjangoFilterBackend',

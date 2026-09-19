@@ -237,7 +237,7 @@ venv/Scripts/python.exe manage.py runserver 8000      # :8000
 venv/Scripts/python.exe manage.py makemigrations
 venv/Scripts/python.exe manage.py migrate
 venv/Scripts/python.exe manage.py seed_data           # reseeds admin/…/testuser
-venv/Scripts/python.exe manage.py test                # 219 tests
+venv/Scripts/python.exe manage.py test                # 236 tests
 venv/Scripts/python.exe manage.py refresh_festivals   # rebuild the festival calendar
 venv/Scripts/python.exe manage.py seed_pujas          # derive rituals from kit/product data
 venv/Scripts/python.exe manage.py generate_synthetic_sales   # SYNTHETIC forecast data
@@ -253,6 +253,7 @@ venv/Scripts/python.exe verify_day3b.py               # 41 assertions
 venv/Scripts/python.exe verify_day3c.py               # 128 assertions — full shopping flow
 venv/Scripts/python.exe verify_day4.py                # 88 assertions — history, reset, validation
 venv/Scripts/python.exe verify_day6.py                # 40 assertions — the ritual entry point
+venv/Scripts/python.exe verify_day7.py                # 30 assertions — token revocation
 
 # Frontend — :3000
 cd frontend && npm run dev
@@ -392,6 +393,36 @@ byte-identical. Only `core`'s runs. If you change seeding, change `core`'s; dele
 The brief permits a safe demo mechanism. If you add password reset, implement it as a real
 token flow and clearly flag it as demo-grade — do **not** fake a successful reset.
 ---
+
+### Token revocation *(added Day 7)*
+
+JWTs are stateless, so nothing can un-issue one. `SIMPLE_JWT`'s access tokens last a day,
+which meant a password reset left any stolen token working for up to 24 hours — a limitation
+this project documented rather than fixed. It is fixed now:
+
+- Every token carries the user's current `UserProfile.token_version` as the `tv` claim.
+- `accounts.tokens.VersionedJWTAuthentication` (the project's `DEFAULT_AUTHENTICATION_CLASSES`)
+  compares that claim against the stored value **on every authenticated request** and rejects a
+  mismatch with a 401.
+- `accounts.tokens.VersionedTokenRefreshSerializer` does the same at `token/refresh/`. **This is
+  not optional**: the refresh endpoint never goes through DRF's authentication classes, so
+  without it a revoked refresh token keeps returning 200 and minting access tokens.
+- `revoke_tokens(user)` bumps the version. It is called by password reset and by
+  `POST /api/auth/logout-all/`.
+- Tokens minted before this existed carry no claim and read as version 0, matching the default,
+  so deploying it does not sign anyone out.
+
+**Do not swap `DEFAULT_AUTHENTICATION_CLASSES` back to the stock `JWTAuthentication`, and do not
+route `login/` or `token/refresh/` at the stock SimpleJWT views.** Either change silently
+disables revocation — nothing fails, the tests just stop protecting anything.
+
+**Why not `token_blacklist`?** That app blacklists *refresh* tokens only, so the access token
+derived from one keeps working until its own expiry. The threat here is precisely the
+outstanding access token.
+
+**Known limit, stated plainly:** a bump invalidates tokens, not sessions that never had one. A
+user's password hash changing does not by itself revoke anything — `revoke_tokens` has to be
+called.
 
 ## 8. Authorization rules
 
@@ -624,9 +655,10 @@ Minimum loop for any change:
 Keep it in `docs/CURRENT-STATE.md`.
 
 Django tests live in `backend/<app>/tests.py` plus `backend/core/tests_roles.py`.
-There are now **219**, covering the recommender (30), the forecaster (33), the
+There are now **236**, covering the recommender (30), the forecaster (33), the
 role/scoping system (47), order status history (23), password reset (25),
-catalogue validation (17), the Puja entry point (24) and add-puja-to-cart (10). Live suites cover the rest:
+catalogue validation (17), the Puja entry point (24), add-puja-to-cart (10) and
+token revocation (17). Live suites cover the rest:
 
 | Suite | Assertions |
 |---|---|
@@ -691,9 +723,9 @@ behind makes the demo order ids drift and can leave a stray login on the system.
 - **Password-reset endpoints never reveal whether an address is registered.** Same status, same
   wording, and a bad uid is indistinguishable from a bad token. A mail-delivery failure is logged
   rather than surfaced, because a 500 only happens when an account matched.
-- **Password reset does not revoke existing JWTs.** Access tokens are stateless and last a day.
-  Do not claim a reset "signs the user out everywhere" — it does not. Real revocation needs a
-  blacklist or a per-user token version.
+- **Password reset DOES revoke existing JWTs** (Day 7) — via the token version claim, not a
+  blacklist. Keep `DEFAULT_AUTHENTICATION_CLASSES` and the login/refresh routes pointed at the
+  versioned classes in `accounts.tokens`, or revocation silently stops working. See §7.
 - **Bound money fields server-side.** `Product.price` and `Area.delivery_fee` carry
   `MinValueValidator(0)`; a negative delivery fee means the store pays the customer.
 - **Never put a destructive call in a verifier's cleanup.** A stray `DELETE` once removed a
@@ -729,7 +761,7 @@ Full detail in `docs/CURRENT-STATE.md` §Priority. Summary:
 § "What is NOT built"). Before adding anything, re-run the full verification sweep:
 
 ```
-./venv/Scripts/python.exe manage.py test          # 219 unit tests
+./venv/Scripts/python.exe manage.py test          # 236 unit tests
 ./venv/Scripts/python.exe verify_day2.py          # 68 assertions
 ./venv/Scripts/python.exe verify_day3.py          # 55 assertions
 ./venv/Scripts/python.exe verify_day3b.py         # 41 assertions

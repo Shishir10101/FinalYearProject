@@ -62,7 +62,8 @@ Endpoints with `pagination_class = None` return a bare JSON array.
 | `GET` | `/profile/` | Any | Current user + nested profile |
 | `PUT` | `/profile/` | Any | Update own profile (partial allowed) |
 | `POST` | `/password-reset/` | Public | Request a reset link *(Day 4)* |
-| `POST` | `/password-reset/confirm/` | Public | Set a new password with uid + token *(Day 4)* |
+| `POST` | `/password-reset/confirm/` | Public | Set a new password with uid + token. **Revokes all existing tokens** *(Day 4, Day 7)* |
+| `POST` | `/logout-all/` | Any | Sign out everywhere: revoke every token issued to the caller *(Day 7)* |
 
 ### `POST /login/`
 
@@ -167,8 +168,37 @@ Other `400` shapes: `{"new_password2": ["The two passwords do not match."]}` and
 `last_login`, so using it — or logging in in the meantime — invalidates it. No
 token is stored server-side and no cleanup job is needed.
 
-**Known limitation:** existing JWTs are not revoked by a reset. Access tokens are
-stateless and last 1 day.
+**Revocation.** A successful reset **ends every existing session** for that account —
+including access tokens that have not yet expired. The usual reason to reset a password
+is that someone else may have it, so changing the password alone would leave their token
+working for up to a day.
+
+It works through a `tv` (token version) claim present in every token and compared against
+`UserProfile.token_version` on **every** authenticated request. Bumping the version
+invalidates everything issued before it, for that user only. Tokens minted before this
+existed carry no claim and read as version 0, so deploying it signs nobody out.
+
+The response wording reflects it:
+
+```json
+{ "message": "Your password has been reset and any other sessions have been signed out. You can now sign in with your new password." }
+```
+
+### `POST /logout-all/`
+
+Authenticated. The remedy for "I think someone else is logged in as me" — logging out
+only discards the token the current device holds.
+
+```json
+{ "message": "All other sessions have been signed out.", "token_version": 1 }
+```
+
+The caller's own token is dead too, so the client must log in again.
+
+> **Implementation note.** `token/refresh/` uses `VersionedTokenRefreshSerializer`. The
+> refresh endpoint never goes through DRF's authentication classes, so a version check in
+> the authentication class alone would leave it answering `200` and minting access tokens
+> for a revoked user. Both places are required.
 
 ---
 

@@ -95,7 +95,7 @@ Base: `http://127.0.0.1:8000/api`
 
 | Group | Endpoints |
 |---|---|
-| Auth | `auth/register/` · `auth/login/` · `auth/token/refresh/` · `auth/profile/` · `auth/password-reset/` · `auth/password-reset/confirm/` |
+| Auth | `auth/register/` · `auth/login/` · `auth/token/refresh/` · `auth/profile/` · `auth/password-reset/` · `auth/password-reset/confirm/` · `auth/logout-all/` |
 | Products | `products/` · `products/featured/` · `products/categories/` · `products/<slug>/` |
 | Festivals | `festivals/kits/` · `festivals/kits/<id>/` · `festivals/upcoming/` · `festivals/recommendations/` |
 | Rituals | `festivals/pujas/` · `festivals/pujas/<slug>/` |
@@ -155,7 +155,8 @@ order history · **order status timeline with real per-step timestamps** ·
 ready-made festival kits · add-whole-kit-to-cart
 
 **Account** — register · login · JWT refresh · profile edit · **password reset**
-(real token flow: single-use, expires in 24 h, no account enumeration)
+(real token flow: single-use, expires in 24 h, no account enumeration) ·
+**sign out everywhere**, and a reset that actually ends existing sessions
 
 **Festivals** — festivals · pujas · required samagri · product relationships · curated kits
 
@@ -180,7 +181,7 @@ catalog settings (categories, delivery areas) · per-field validation on every f
 cd frontend        && npm run build      # must pass
 cd admin-dashboard && npm run build      # must pass
 cd backend         && venv/Scripts/python.exe manage.py check
-cd backend         && venv/Scripts/python.exe manage.py test    # 219 tests
+cd backend         && venv/Scripts/python.exe manage.py test    # 236 tests
 ```
 
 Live end-to-end checks (backend must be running on :8000):
@@ -192,6 +193,7 @@ cd backend && venv/Scripts/python.exe verify_day3b.py    #  41 assertions
 cd backend && venv/Scripts/python.exe verify_day3c.py    # 128 assertions (full purchase path)
 cd backend && venv/Scripts/python.exe verify_day4.py     #  88 assertions (history, reset, validation)
 cd backend && venv/Scripts/python.exe verify_day6.py     #  40 assertions (the ritual entry point)
+cd backend && venv/Scripts/python.exe verify_day7.py     #  30 assertions (token revocation)
 cd backend && venv/Scripts/python.exe manage.py purge_verification_orders   # clean up after
 cd backend && venv/Scripts/python.exe manage.py purge_verification_users
 ```
@@ -211,7 +213,7 @@ cd admin-dashboard && npx eslint --rule '{"no-undef":"error"}' src/
 
 No feature is complete until its build is clean and the flow has been exercised end to end.
 
-**Last verified:** 2026-09-19 — **219 unit tests + 420 live E2E assertions** passing, both
+**Last verified:** 2026-09-19 — **236 unit tests + 450 live E2E assertions** passing, both
 frontends building clean (13/13 customer routes, 10/10 admin routes), authorization tests
 correct, and the database back to its seeded state (8 orders · 35 products · 10 categories ·
 3 areas · 1 vendor · 8 status events · 0 scratch rows) after purging.

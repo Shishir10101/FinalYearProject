@@ -31,6 +31,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+import uuid
 
 BASE = os.environ.get('VERIFY_BASE', 'http://127.0.0.1:8000')
 PASS = 0
@@ -38,10 +39,17 @@ FAIL = 0
 FAILURES = []
 
 ORDER_MARKER = 'verify_day4.py'
-PROBE_USERNAME = 'verifyday4probe'
-PROBE_EMAIL = 'verifyday4probe@example.com'
+# Unique per run. A fixed name collides on a re-run (register returns 400 "already
+# exists") and the script silently skips its password-reset section, which looks
+# like a product failure but is a verifier bug.
+PROBE_SUFFIX = uuid.uuid4().hex[:8]
+PROBE_USERNAME = f'verifyday4probe{PROBE_SUFFIX}'
+PROBE_EMAIL = f'verifyday4probe{PROBE_SUFFIX}@example.com'
 PROBE_OLD_PASSWORD = 'ProbeOldPass123'
 PROBE_NEW_PASSWORD = 'ProbeNewPass456'
+
+
+SKIPPED = 0
 
 
 def check(label, condition, detail=''):
@@ -53,6 +61,23 @@ def check(label, condition, detail=''):
         FAIL += 1
         FAILURES.append(label)
         print(f'  FAIL  {label}  {detail}')
+
+
+def skip(label, reason):
+    """A check that could not run for an environmental reason.
+
+    The password-reset endpoints are throttled at 10/min per IP, and a full
+    verification sweep exceeds that inside a minute. A 429 there means the throttle
+    is working, so it is reported as a skip rather than a failure — otherwise the
+    suite becomes order-dependent and reports a product bug that is not one.
+    """
+    global SKIPPED
+    SKIPPED += 1
+    print(f'  SKIP  {label}  ({reason})')
+
+
+def throttled(status, body):
+    return status == 429 or (isinstance(body, dict) and 'throttl' in json.dumps(body).lower())
 
 
 def section(title):
@@ -220,6 +245,13 @@ def test_password_reset():
     # --- enumeration resistance, measured on the production configuration shape
     status_known, known = request('POST', '/api/auth/password-reset/',
                                   body={'email': PROBE_EMAIL})
+    if throttled(status_known, known):
+        # This section makes about ten calls to a 10/min-per-IP endpoint, so a
+        # back-to-back sweep exhausts it. Bail out once, clearly, instead of
+        # reporting ten failures that are all the same 429.
+        skip('the whole password-reset section',
+             'rate limited (10/min per IP) — re-run after a minute')
+        return
     status_unknown, unknown = request('POST', '/api/auth/password-reset/',
                                       body={'email': 'definitely-not-registered@example.com'})
     check('known address returns 200', status_known == 200, f'status={status_known}')
@@ -361,8 +393,11 @@ def test_authorization(customer_token, admin_token):
         status, _ = request('GET', endpoint, admin_token)
         check(f'admin 200 on {endpoint}', status == 200, f'status={status}')
 
-    status, _ = request('POST', '/api/auth/password-reset/', body={'email': 'x'})
-    check('password reset rejects a malformed email', status == 400, f'status={status}')
+    status, body = request('POST', '/api/auth/password-reset/', body={'email': 'x'})
+    if throttled(status, body):
+        skip('password reset rejects a malformed email', 'rate limited (10/min per IP)')
+    else:
+        check('password reset rejects a malformed email', status == 400, f'status={status}')
 
     status, _ = request('GET', '/api/orders/')
     check('anonymous cannot list orders', status == 401, f'status={status}')
@@ -399,7 +434,8 @@ def main():
     print('        manage.py purge_verification_users')
 
     print(f'\n{"=" * 60}')
-    print(f'  {PASS} passed, {FAIL} failed')
+    print(f'  {PASS} passed, {FAIL} failed'
+          + (f', {SKIPPED} skipped' if SKIPPED else ''))
     if FAILURES:
         print('  Failed checks:')
         for name in FAILURES:

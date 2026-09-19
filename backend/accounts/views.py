@@ -1,6 +1,7 @@
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
@@ -12,8 +13,33 @@ from .serializers import (
 )
 from .password_reset import build_reset_url
 from .throttling import PasswordResetThrottle
+from .tokens import (
+    revoke_tokens, VersionedTokenObtainPairSerializer, VersionedTokenRefreshSerializer,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class VersionedTokenObtainPairView(TokenObtainPairView):
+    """Login. Issues tokens carrying the token version claim.
+
+    Defined here rather than in `accounts/tokens.py` because that module is
+    imported while DRF initialises its settings, and importing `simplejwt.views`
+    at that point raises a circular ImportError.
+    """
+
+    serializer_class = VersionedTokenObtainPairSerializer
+
+
+class VersionedTokenRefreshView(TokenRefreshView):
+    """Refresh. Refuses a refresh token issued before the last revocation.
+
+    Without this the refresh endpoint would keep answering 200 for a revoked
+    user's token, because it never goes through the authentication class that
+    enforces the version.
+    """
+
+    serializer_class = VersionedTokenRefreshSerializer
 
 
 class RegisterView(generics.CreateAPIView):
@@ -121,11 +147,10 @@ class PasswordResetRequestView(APIView):
 class PasswordResetConfirmView(APIView):
     """Finish a password reset with a uid + token from the emailed link.
 
-    Note on session invalidation: this changes the password but cannot revoke
-    already-issued JWTs. Access tokens last one day and are stateless, so anyone
-    holding a stolen token keeps it until it expires. Real revocation needs a
-    token blacklist or a per-user token version — deliberately out of scope here
-    and recorded as a known limitation rather than implied to be handled.
+    This also **revokes every existing token for the account**. That matters
+    because the usual reason to reset a password is that someone else may have it:
+    changing the password alone would leave their access token working for up to a
+    day. Bumping the token version ends those sessions immediately.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -134,7 +159,29 @@ class PasswordResetConfirmView(APIView):
     def post(self, request):
         serializer = PasswordResetConfirmSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        user = serializer.save()
+        revoke_tokens(user)
         return Response({
-            'message': 'Your password has been reset. You can now sign in with your new password.'
+            'message': (
+                'Your password has been reset and any other sessions have been '
+                'signed out. You can now sign in with your new password.'
+            )
+        })
+
+
+class LogoutAllView(APIView):
+    """Sign out everywhere: revoke every token issued to the caller.
+
+    A real user-facing action rather than an internal one. Without it, "I think
+    someone else is logged in as me" has no remedy — logging out only discards the
+    token the current device happens to be holding.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        version = revoke_tokens(request.user)
+        return Response({
+            'message': 'All other sessions have been signed out.',
+            'token_version': version,
         })
