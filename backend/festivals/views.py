@@ -10,6 +10,7 @@ from .serializers import (
     FestivalKitListSerializer, FestivalKitDetailSerializer,
     UpcomingFestivalSerializer, FestivalKitAdminSerializer,
     KitItemAdminSerializer, PujaListSerializer, PujaDetailSerializer,
+    PujaAdminSerializer, PujaItemAdminSerializer,
 )
 from products.serializers import ProductListSerializer
 from .recommender import Recommender, serialize_recommendations
@@ -165,13 +166,66 @@ class AdminFestivalKitDetailView(generics.RetrieveUpdateDestroyAPIView):
 class AdminKitItemListCreateView(generics.ListCreateAPIView):
     serializer_class = KitItemAdminSerializer
     permission_classes = [IsManagerOrReadOnly]
+    # Unpaginated on purpose. The item list is not a browsable table — it is the
+    # body of an editor, which must show every item. With the project-wide
+    # PAGE_SIZE of 12 the Bratabandha kit (14 items) would silently lose two, and
+    # an admin would have no way to tell.
+    pagination_class = None
 
     def get_queryset(self):
         kit_id = self.kwargs.get('kit_id')
-        return KitItem.objects.filter(kit_id=kit_id)
+        return KitItem.objects.filter(kit_id=kit_id).select_related('product')
 
 
-class AdminKitItemDeleteView(generics.DestroyAPIView):
+class AdminKitItemDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """One kit item: read, change quantity or required flag, or remove.
+
+    Was delete-only. An editor that can only add and remove forces an admin to
+    delete and re-create an item just to change its quantity from 1 to 2, which
+    also churns the row's id.
+    """
+
     queryset = KitItem.objects.all()
     serializer_class = KitItemAdminSerializer
+    permission_classes = [IsManagerOrReadOnly]
+
+
+# --- Admin: rituals ---------------------------------------------------------
+#
+# Puja and PujaItem had public read endpoints but no write path, so the only way
+# to edit a ritual was Django admin at /admin/. These mirror the kit views above
+# exactly — same permission class, same URL shape — so the dashboard can treat a
+# ritual and a kit identically.
+
+
+class AdminPujaListCreateView(generics.ListCreateAPIView):
+    queryset = Puja.objects.all()
+    serializer_class = PujaAdminSerializer
+    permission_classes = [IsManagerOrReadOnly]
+    pagination_class = None
+
+
+class AdminPujaDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Puja.objects.all()
+    serializer_class = PujaAdminSerializer
+    permission_classes = [IsManagerOrReadOnly]
+
+
+class AdminPujaItemListCreateView(generics.ListCreateAPIView):
+    serializer_class = PujaItemAdminSerializer
+    permission_classes = [IsManagerOrReadOnly]
+    # Unpaginated for the same reason as the kit items above: Daily Puja has 21
+    # items and PAGE_SIZE is 12.
+    pagination_class = None
+
+    def get_queryset(self):
+        puja_id = self.kwargs.get('puja_id')
+        return PujaItem.objects.filter(puja_id=puja_id).select_related('product')
+
+
+class AdminPujaItemDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """One ritual item — same reasoning as `AdminKitItemDetailView`."""
+
+    queryset = PujaItem.objects.all()
+    serializer_class = PujaItemAdminSerializer
     permission_classes = [IsManagerOrReadOnly]

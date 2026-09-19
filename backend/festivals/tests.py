@@ -17,7 +17,11 @@ from decimal import Decimal
 from django.contrib.auth.models import User
 from django.test import TestCase
 from django.utils import timezone
+from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import RefreshToken
 
+from accounts.models import UserProfile
+from core.permissions import ROLE_ADMIN, ROLE_CUSTOMER, ROLE_VENDOR
 from django.core.management import call_command
 
 from products.models import Category, Product
@@ -688,3 +692,258 @@ class SeedPujasCommandTests(TestCase):
 
         call_command('seed_pujas', verbosity=0)
         self.assertTrue(puja.items.filter(product=extra).exists())
+
+
+class AdminPujaCrudTests(TestCase):
+    """Write endpoints for rituals.
+
+    Before these existed, `Puja` had public read endpoints and nothing else, so the
+    only way to edit a ritual was Django admin at /admin/. These mirror the kit
+    admin views exactly, because the dashboard renders both through one editor.
+    """
+
+    def setUp(self):
+        self.category = Category.objects.create(name='Admin Puja Cat')
+        self.products = [
+            Product.objects.create(
+                name=f'Admin Puja Product {i}', description='x', price=Decimal('100'),
+                stock=50, category=self.category, popularity_score=i,
+            )
+            for i in range(1, 4)
+        ]
+
+        self.manager = self._user('mgr', ROLE_ADMIN)
+        self.vendor = self._user('ven', ROLE_VENDOR)
+        self.customer = self._user('cust', ROLE_CUSTOMER)
+
+        self.puja = Puja.objects.create(name='Managed Ritual', slug='managed-ritual')
+
+    def _user(self, username, role):
+        user = User.objects.create_user(username, password='pw12345678')
+        UserProfile.objects.create(user=user, role=role)
+        return user
+
+    def api(self, user):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(user).access_token}')
+        return client
+
+    # --- authorization ---------------------------------------------------
+
+    def test_manager_can_list(self):
+        response = self.api(self.manager).get('/api/festivals/admin/pujas/')
+        self.assertEqual(response.status_code, 200)
+
+    def test_customer_is_refused(self):
+        client = self.api(self.customer)
+        self.assertEqual(client.get('/api/festivals/admin/pujas/').status_code, 403)
+        self.assertEqual(
+            client.post('/api/festivals/admin/pujas/', {'name': 'Nope'}, format='json').status_code,
+            403,
+        )
+
+    def test_vendor_can_read_but_not_write(self):
+        """Kits work this way; rituals must not be looser."""
+        client = self.api(self.vendor)
+        self.assertEqual(client.get('/api/festivals/admin/pujas/').status_code, 200)
+        self.assertEqual(
+            client.post('/api/festivals/admin/pujas/', {'name': 'Nope'}, format='json').status_code,
+            403,
+        )
+
+    def test_anonymous_is_refused(self):
+        self.assertEqual(APIClient().get('/api/festivals/admin/pujas/').status_code, 401)
+
+    # --- CRUD ------------------------------------------------------------
+
+    def test_create_derives_a_slug(self):
+        response = self.api(self.manager).post(
+            '/api/festivals/admin/pujas/',
+            {'name': 'Satyanarayan Puja', 'description': 'x', 'occasion_type': 'other'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()['slug'], 'satyanarayan-puja')
+
+    def test_duplicate_name_still_gets_a_unique_slug(self):
+        """Two rituals may share a name; the slug must not collide."""
+        client = self.api(self.manager)
+        first = client.post('/api/festivals/admin/pujas/', {'name': 'Same Name'}, format='json')
+        second = client.post('/api/festivals/admin/pujas/', {'name': 'Same Name'}, format='json')
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201, second.json())
+        self.assertNotEqual(first.json()['slug'], second.json()['slug'])
+
+    def test_slug_is_read_only(self):
+        response = self.api(self.manager).patch(
+            f'/api/festivals/admin/pujas/{self.puja.id}/',
+            {'slug': 'hijacked'}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.puja.refresh_from_db()
+        self.assertEqual(self.puja.slug, 'managed-ritual')
+
+    def test_update(self):
+        response = self.api(self.manager).patch(
+            f'/api/festivals/admin/pujas/{self.puja.id}/',
+            {'name': 'Renamed Ritual', 'is_active': False}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.puja.refresh_from_db()
+        self.assertEqual(self.puja.name, 'Renamed Ritual')
+        self.assertFalse(self.puja.is_active)
+
+    def test_delete(self):
+        response = self.api(self.manager).delete(
+            f'/api/festivals/admin/pujas/{self.puja.id}/'
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Puja.objects.filter(pk=self.puja.pk).exists())
+
+    def test_counts_are_reported(self):
+        PujaItem.objects.create(puja=self.puja, product=self.products[0], is_required=True)
+        FestivalKit.objects.create(
+            name='Kit For It', festival_type='dashain', description='x', puja=self.puja,
+        )
+        row = self.api(self.manager).get('/api/festivals/admin/pujas/').json()[0]
+        self.assertEqual(row['item_count'], 1)
+        self.assertEqual(row['kit_count'], 1)
+
+    # --- items -----------------------------------------------------------
+
+    def test_item_list_is_unpaginated(self):
+        """The editor must show every item.
+
+        With the project-wide PAGE_SIZE of 12 a 14-item kit silently lost two rows
+        and the admin had no way to notice. `Daily Puja` has 21 items.
+        """
+        for i in range(14):
+            product = Product.objects.create(
+                name=f'Bulk {i}', description='x', price=Decimal('10'),
+                stock=5, category=self.category,
+            )
+            PujaItem.objects.create(puja=self.puja, product=product)
+        body = self.api(self.manager).get(
+            f'/api/festivals/admin/pujas/{self.puja.id}/items/'
+        ).json()
+        self.assertIsInstance(body, list, 'item list must not be paginated')
+        self.assertEqual(len(body), 14)
+
+    def test_add_an_item(self):
+        response = self.api(self.manager).post(
+            f'/api/festivals/admin/pujas/{self.puja.id}/items/',
+            {'puja': self.puja.id, 'product': self.products[0].id,
+             'quantity': 3, 'is_required': True},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(self.puja.items.count(), 1)
+
+    def test_item_payload_carries_product_details(self):
+        """The dashboard must be able to label a row without fetching every product."""
+        PujaItem.objects.create(puja=self.puja, product=self.products[0], quantity=2)
+        row = self.api(self.manager).get(
+            f'/api/festivals/admin/pujas/{self.puja.id}/items/'
+        ).json()[0]
+        self.assertEqual(row['product_name'], self.products[0].name)
+        self.assertEqual(Decimal(row['product_price']), self.products[0].price)
+        self.assertEqual(row['product_unit'], self.products[0].unit)
+
+    def test_the_same_product_cannot_be_added_twice(self):
+        client = self.api(self.manager)
+        url = f'/api/festivals/admin/pujas/{self.puja.id}/items/'
+        payload = {'puja': self.puja.id, 'product': self.products[0].id, 'quantity': 1}
+        self.assertEqual(client.post(url, payload, format='json').status_code, 201)
+        second = client.post(url, payload, format='json')
+        self.assertEqual(second.status_code, 400, second.json())
+
+    def test_item_quantity_and_required_flag_can_be_edited(self):
+        """Without an update endpoint, changing a quantity means delete-and-re-add.
+
+        The view used to be a DestroyAPIView, so the editor could only add and
+        remove — and re-creating an item churns its id.
+        """
+        item = PujaItem.objects.create(
+            puja=self.puja, product=self.products[0], quantity=1, is_required=True,
+        )
+        response = self.api(self.manager).patch(
+            f'/api/festivals/admin/puja-items/{item.id}/',
+            {'quantity': 5, 'is_required': False}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        item.refresh_from_db()
+        self.assertEqual(item.quantity, 5)
+        self.assertFalse(item.is_required)
+
+    def test_kit_item_quantity_can_be_edited(self):
+        kit = FestivalKit.objects.create(name='Editable Kit', festival_type='dashain', description='x')
+        item = KitItem.objects.create(kit=kit, product=self.products[0], quantity=1)
+        response = self.api(self.manager).patch(
+            f'/api/festivals/admin/kit-items/{item.id}/', {'quantity': 4}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        item.refresh_from_db()
+        self.assertEqual(item.quantity, 4)
+
+    def test_remove_an_item(self):
+        item = PujaItem.objects.create(puja=self.puja, product=self.products[0])
+        response = self.api(self.manager).delete(f'/api/festivals/admin/puja-items/{item.id}/')
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.puja.items.count(), 0)
+
+    def test_removing_an_item_does_not_delete_the_product(self):
+        """A catalogue product must survive being taken out of a ritual."""
+        item = PujaItem.objects.create(puja=self.puja, product=self.products[0])
+        self.api(self.manager).delete(f'/api/festivals/admin/puja-items/{item.id}/')
+        self.assertTrue(Product.objects.filter(pk=self.products[0].pk).exists())
+
+    def test_customer_cannot_touch_items(self):
+        item = PujaItem.objects.create(puja=self.puja, product=self.products[0])
+        client = self.api(self.customer)
+        self.assertEqual(
+            client.get(f'/api/festivals/admin/pujas/{self.puja.id}/items/').status_code, 403
+        )
+        self.assertEqual(
+            client.delete(f'/api/festivals/admin/puja-items/{item.id}/').status_code, 403
+        )
+
+
+class AdminKitItemPaginationTests(TestCase):
+    """Guards the kit side of the same fix.
+
+    `AdminKitItemListCreateView` had the project-wide PAGE_SIZE applied, so the
+    seeded Bratabandha kit (14 items) returned 12 through the API and the editor
+    would have silently shown an incomplete kit.
+    """
+
+    def setUp(self):
+        self.category = Category.objects.create(name='Kit Pagination Cat')
+        self.manager = User.objects.create_user('mgr2', password='pw12345678')
+        UserProfile.objects.create(user=self.manager, role=ROLE_ADMIN)
+        self.kit = FestivalKit.objects.create(
+            name='Big Kit', festival_type='dashain', description='x',
+        )
+        for i in range(14):
+            product = Product.objects.create(
+                name=f'Kit Bulk {i}', description='x', price=Decimal('10'),
+                stock=5, category=self.category,
+            )
+            KitItem.objects.create(kit=self.kit, product=product)
+
+    def api(self):
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.manager).access_token}'
+        )
+        return client
+
+    def test_kit_item_list_is_unpaginated(self):
+        body = self.api().get(f'/api/festivals/admin/kits/{self.kit.id}/items/').json()
+        self.assertIsInstance(body, list, 'kit item list must not be paginated')
+        self.assertEqual(len(body), 14)
+
+    def test_kit_item_payload_carries_product_details(self):
+        row = self.api().get(f'/api/festivals/admin/kits/{self.kit.id}/items/').json()[0]
+        self.assertTrue(row['product_name'])
+        self.assertIn('product_price', row)
+        self.assertIn('product_unit', row)

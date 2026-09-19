@@ -109,6 +109,59 @@ class FestivalKitAdminSerializer(serializers.ModelSerializer):
 
 
 class KitItemAdminSerializer(serializers.ModelSerializer):
+    """Kit items, with the product's display fields alongside the raw id.
+
+    The dashboard needs the name and price to render a usable list; without them
+    it would have to fetch every product just to label a row.
+    """
+
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    product_price = serializers.DecimalField(
+        source='product.price', max_digits=10, decimal_places=2, read_only=True
+    )
+    product_unit = serializers.CharField(source='product.unit', read_only=True)
+
     class Meta:
         model = KitItem
+        fields = '__all__'
+
+
+class PujaAdminSerializer(serializers.ModelSerializer):
+    """Write serializer for rituals.
+
+    `slug` is read-only because `Puja.save()` derives and uniquifies it — letting a
+    client set it would allow two rituals to collide on the UNIQUE column.
+    """
+
+    item_count = serializers.SerializerMethodField()
+    kit_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Puja
+        fields = ['id', 'name', 'slug', 'description', 'occasion_type',
+                  'is_active', 'item_count', 'kit_count', 'created_at']
+        read_only_fields = ['slug', 'created_at']
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+    def get_kit_count(self, obj):
+        return obj.kits.count()
+
+
+class PujaItemAdminSerializer(serializers.ModelSerializer):
+    """Puja items, with the product's display fields alongside the raw id.
+
+    Same shape as `KitItemAdminSerializer` on purpose: the dashboard renders both
+    through one shared item manager, so the payloads must agree.
+    """
+
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    product_price = serializers.DecimalField(
+        source='product.price', max_digits=10, decimal_places=2, read_only=True
+    )
+    product_unit = serializers.CharField(source='product.unit', read_only=True)
+
+    class Meta:
+        model = PujaItem
         fields = '__all__'

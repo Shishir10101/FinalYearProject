@@ -4,7 +4,9 @@ from .views import (
     UpcomingFestivalsView, RecommendationsView,
     PujaListView, PujaDetailView,
     AdminFestivalKitListCreateView, AdminFestivalKitDetailView,
-    AdminKitItemListCreateView, AdminKitItemDeleteView
+    AdminKitItemListCreateView, AdminKitItemDetailView,
+    AdminPujaListCreateView, AdminPujaDetailView,
+    AdminPujaItemListCreateView, AdminPujaItemDetailView,
 )
 
 urlpatterns = [
@@ -22,5 +24,9 @@ urlpatterns = [
     path('admin/kits/', AdminFestivalKitListCreateView.as_view(), name='admin-kit-list'),
     path('admin/kits/<int:pk>/', AdminFestivalKitDetailView.as_view(), name='admin-kit-detail'),
     path('admin/kits/<int:kit_id>/items/', AdminKitItemListCreateView.as_view(), name='admin-kit-items'),
-    path('admin/kit-items/<int:pk>/', AdminKitItemDeleteView.as_view(), name='admin-kit-item-delete'),
+    path('admin/kit-items/<int:pk>/', AdminKitItemDetailView.as_view(), name='admin-kit-item-detail'),
+    path('admin/pujas/', AdminPujaListCreateView.as_view(), name='admin-puja-list'),
+    path('admin/pujas/<int:pk>/', AdminPujaDetailView.as_view(), name='admin-puja-detail'),
+    path('admin/pujas/<int:puja_id>/items/', AdminPujaItemListCreateView.as_view(), name='admin-puja-items'),
+    path('admin/puja-items/<int:pk>/', AdminPujaItemDetailView.as_view(), name='admin-puja-item-detail'),
 ]
