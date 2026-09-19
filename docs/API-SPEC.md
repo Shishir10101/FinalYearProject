@@ -355,8 +355,25 @@ An order containing two of a vendor's products appears **once** (`.distinct()`).
 |---|---|---|---|
 | `GET` | `/kits/` | Public | Festival kits |
 | `GET` | `/kits/<id>/` | Public | Kit detail with items and computed price |
-| `GET` | `/upcoming/` | Public | Festivals from today forward |
+| `GET` | `/upcoming/` | Public | Festivals from today forward. `?limit=` (default 5, max 50) |
 | `GET` | `/recommendations/` | Public | **Ranked, explainable recommendations** |
+
+### `GET /upcoming/`
+
+Soonest first. The result count used to be a hardcoded `[:5]`, so five of the ten
+active future festivals were unreachable through the API and nothing said so —
+the storefront and the home page both silently showed the first five. It is now a
+parameter:
+
+| Query | Result |
+|---|---|
+| *(none)* | 5 — preserves the previous default |
+| `?limit=12` | up to 12 |
+| `?limit=9999` | capped at 50 |
+| `?limit=0` | floored at 1 |
+| `?limit=abc` | falls back to the default 5 |
+
+Past festivals are never returned, whatever the limit.
 
 ### `GET /recommendations/`
 

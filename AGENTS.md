@@ -203,7 +203,7 @@ venv/Scripts/python.exe manage.py runserver 8000      # :8000
 venv/Scripts/python.exe manage.py makemigrations
 venv/Scripts/python.exe manage.py migrate
 venv/Scripts/python.exe manage.py seed_data           # reseeds admin/…/testuser
-venv/Scripts/python.exe manage.py test                # 178 tests
+venv/Scripts/python.exe manage.py test                # 185 tests
 venv/Scripts/python.exe manage.py refresh_festivals   # rebuild the festival calendar
 venv/Scripts/python.exe manage.py generate_synthetic_sales   # SYNTHETIC forecast data
 
@@ -275,6 +275,33 @@ It is exposed publicly via `GET /api/orders/config/` and persisted per-order in
 `Order.delivery_fee`. Both frontends read it from the API.
 **Never hardcode the delivery amount in a component** — that is the bug that made the cart
 promise Rs. 100 more than the order recorded.
+
+### Never hardcode a list the database already holds
+
+Three hardcoded lists each hid real data, and none of them failed loudly — they silently
+made the unlisted thing unreachable:
+
+| Was hardcoded | Now |
+|---|---|
+| `CITY_CHOICES` in three files | The `Area` table (Day 3) |
+| The festival type filter in `festivals/page.js` (seven literals) | Derived from the kits' own `festival_type` / `festival_type_display` (Day 5) |
+| `/festivals/upcoming/` capped at `[:5]` | `?limit=`, default 5, max 50 (Day 5) — five of ten active festivals had been unreachable |
+
+**If a value is a row in the database, read it. Do not write it into a component.**
+
+### One product tile
+
+`frontend/src/components/ProductCard.js` is the **only** product tile — home, catalogue and
+recommendations all render it. They previously had three implementations that had drifted,
+and the home version's `+` button had **no handler at all**: it looked like an add-to-cart
+control and did nothing.
+
+It is a client component, because the add button needs the cart context. It reads that
+context itself rather than accepting a callback, so the Server Component home page can render
+it without passing a function across the boundary. Optional `reason` and `badge` props carry
+the recommendation explanation and the festival-urgency label.
+
+**Do not hand-roll a fourth variant.** Adding one is exactly how the first three drifted apart.
 
 ---
 
@@ -561,7 +588,7 @@ Minimum loop for any change:
 Keep it in `docs/CURRENT-STATE.md`.
 
 Django tests live in `backend/<app>/tests.py` plus `backend/core/tests_roles.py`.
-There are now **178**, covering the recommender (23), the forecaster (33), the
+There are now **185**, covering the recommender (30), the forecaster (33), the
 role/scoping system (47), order status history (23), password reset (25) and
 catalogue validation (17). Live suites cover the rest:
 
@@ -666,7 +693,7 @@ Full detail in `docs/CURRENT-STATE.md` §Priority. Summary:
 § "What is NOT built"). Before adding anything, re-run the full verification sweep:
 
 ```
-./venv/Scripts/python.exe manage.py test          # 178 unit tests
+./venv/Scripts/python.exe manage.py test          # 185 unit tests
 ./venv/Scripts/python.exe verify_day2.py          # 68 assertions
 ./venv/Scripts/python.exe verify_day3.py          # 55 assertions
 ./venv/Scripts/python.exe verify_day3b.py         # 41 assertions
@@ -683,9 +710,14 @@ name), a completely broken Catalog Settings page, and the fact that **nothing wa
 control**. 178 unit tests + 380 live assertions pass.
 
 **P1** wishlist · reviews/ratings · vendor self-service UI · kit editor UI · vendor & area
-analytics · puja-centric home landing · consistent product cards · search relevance
+analytics · search relevance · image upload widget · JWT revocation on password reset
 
 **P2** live payments · notifications · advanced analytics · extra animation
+
+**Day 5 — the festival domain, made visible (2026-09-19)** rebuilt the home page to lead with
+the next festival and its required samagri, replaced three drifted product cards with one
+shared `ProductCard`, and removed two more hardcoded lists. 185 unit tests + 380 live
+assertions pass.
 
 **The shopping flow already works.** Do not rebuild it. Fix, extend, and polish.
 

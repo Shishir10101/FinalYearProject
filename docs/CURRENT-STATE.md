@@ -2,7 +2,108 @@
 
 Analysis date: 2026-09-18
 Method: full source inspection + live server probing.
-Last updated: 2026-09-19 (Day 4 complete — see §Day 4 Completed below).
+Last updated: 2026-09-19 (Day 5 complete — see §Day 5 Completed below).
+
+---
+
+## Day 5 Completed (2026-09-19) — the festival domain, made visible
+
+**Theme:** the project's differentiator was invisible on the first screen. The home
+page led with a generic product grid, which is exactly the "generic shop with a
+religious category bolted on" outcome `AGENTS.md` calls a failed project.
+
+**Verification: 185 backend unit tests + 380 live assertions, all passing.**
+
+| # | Was | Now |
+|---|-----|-----|
+| 1 | Home page opened with a generic product grid; the festival calendar was a small side section | **REBUILT** — leads with the next festival: name, countdown, description, its kit (or an honest "no kit yet"), and a **Required Samagri** panel |
+| 2 | Three product cards had drifted apart. The home version omitted the unit and its "+" button **had no handler** — it looked like add-to-cart and did nothing | **ONE SHARED `ProductCard`** used by home, catalogue and recommendations, with working add-to-cart and an optional reason/urgency slot |
+| 3 | Festival type filter was a hardcoded list of 7 types | **DERIVED from the kits that exist** — same trap as the old hardcoded `CITY_CHOICES` |
+| 4 | `/festivals/upcoming/` was hardcoded to `[:5]`, so 5 of the 10 active festivals were unreachable | **`?limit=`** (default 5, max 50) |
+| 5 | *(regression I introduced and caught)* The spotlight offered "Get this kit" for a festival that has no kit | **FIXED** — the spotlight's kit and the required-samagri panel are separate values |
+
+### 1. The home page now leads with the domain
+
+```
+Hero (with "Ganesh Chaturthi · In 5 days")
+  ↓
+Next festival spotlight  →  countdown, description, kit box or honest "no kit yet"
+  ↓  alongside  →  Required Samagri panel (only `is_required` items)
+Recommended For You     →  4 cards, each carrying the backend's reason text
+The Festival Calendar   →  4 festivals, soonest first
+Featured Samagri
+Why choose us           →  names the algorithm and whether ranking was personalised
+```
+
+Verified live: the hero badge reads `Ganesh Chaturthi · In 5 days`, and the
+spotlight renders `We do not have a ready-made kit for Ganesh Chaturthi yet.`
+with a link to the recommender — because **3 of the 6 soonest festivals have no
+kit** (Ganesh Chaturthi, Haritalika Teej, Indra Jatra). Handling that case was not
+hypothetical; it is the default state of the calendar today.
+
+The `meta` block from the recommender is surfaced on the page
+(`Ranked by weighted-signal-ranker over 21 candidates. Sign in to personalise…`),
+so the ranking is not a black box.
+
+### 2. Required samagri, and a design problem it exposed
+
+`KitItem.is_required` is the Required Samagri mechanism — `AGENTS.md` says "use
+it", and nothing in the UI showed it. The panel lists only required items with
+prices and links to the kit.
+
+The first implementation tied the panel to the next festival's kit, so on a
+kitless festival the panel vanished — hiding the project's key domain concept
+whenever the calendar happened not to cooperate. The panel now follows the
+**nearest festival that has a kit** and names it
+(`For Ghatasthapana (Dashain Begins) · In 32 days`), which is honest and always
+populated.
+
+### 3. One product card
+
+`components/ProductCard.js` + `.module.css`. Client component, because the add
+button needs the cart context; it reads the context itself rather than taking a
+callback so the Server Component home page can render it without passing a
+function across the boundary. Optional `reason` and `badge` props carry the
+recommendation explanation and festival-urgency label.
+
+The old card CSS was deleted from `page.module.css`, `products.module.css` and
+`recommendations.module.css` rather than left as dead code.
+
+### 4. Two hardcoded lists removed
+
+- **Festival type filter.** Was 7 literal entries in `festivals/page.js`. Now
+  derived from the kits' own `festival_type` / `festival_type_display`. Coverage is
+  identical today, one label is better (`Pasni (Rice Feeding)` vs `Pasni`), and a
+  kit for a new type can no longer exist without a way to reach it.
+- **`/festivals/upcoming/` limit.** Was `[:5]`. Now a parameter — the calendar has
+  10 active festivals and only 5 were reachable.
+
+### Verification after Day 5
+
+| Suite | Result |
+|---|---|
+| `manage.py test` | **185 pass** (was 178) — 7 new, covering the `limit` contract |
+| `verify_day2.py` | 68/68 — no regression |
+| `verify_day3.py` | 55/55 — no regression |
+| `verify_day3b.py` | 41/41 — no regression |
+| `verify_day3c.py` | 128/128 — no regression |
+| `verify_day4.py` | 88/88 — no regression |
+| **Live assertions** | **380** |
+
+- Frontend builds clean, 13/13 routes. All 10 checked routes return 200, including
+  `/festivals?type=dashain` (kit exists) and `/festivals?type=other` (no kit).
+- `npx eslint --rule '{"no-undef":"error"}' src/` clean — no undefined identifiers
+  in the new component.
+- Database restored to seeded state after purging: 3 users · 35 products ·
+  10 categories · 3 areas · 1 vendor · 8 orders · 0 cart lines · 8 status events ·
+  7 kits · 10 active future festivals.
+
+### Docs updated
+
+`FEATURES.md` (three rows moved out of "not built", Day 5 fix list),
+`API-SPEC.md` (`?limit=` contract with the full truth table), `UI-UX-SPEC.md`
+(shared card, festival-first home), `AGENTS.md` (the two new rules),
+`README.md`, this file.
 
 ---
 

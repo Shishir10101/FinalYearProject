@@ -36,16 +36,35 @@ class FestivalKitDetailView(generics.RetrieveAPIView):
 
 
 class UpcomingFestivalsView(generics.ListAPIView):
+    """The festival calendar, soonest first.
+
+    The result count used to be a hardcoded ``[:5]``, which meant the ten active
+    upcoming festivals in the database could never all be reached — the storefront
+    and the home page both silently showed the first five and there was no way to
+    ask for the rest. It is now ``?limit=`` (default 5, capped at 50) so a caller
+    that wants the whole calendar can get it.
+    """
+
     serializer_class = UpcomingFestivalSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = None
+
+    DEFAULT_LIMIT = 5
+    MAX_LIMIT = 50
+
+    def get_limit(self):
+        try:
+            limit = int(self.request.query_params.get('limit', self.DEFAULT_LIMIT))
+        except (TypeError, ValueError):
+            return self.DEFAULT_LIMIT
+        return max(1, min(limit, self.MAX_LIMIT))
 
     def get_queryset(self):
         today = timezone.now().date()
         return UpcomingFestival.objects.filter(
             date__gte=today,
             is_active=True
-        )[:5]
+        )[:self.get_limit()]
 
 
 class RecommendationsView(APIView):

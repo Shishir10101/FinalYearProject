@@ -27,14 +27,16 @@ e-commerce. Three first-class concepts exist that a generic shop would not have:
 
 | Feature | Status | Notes |
 |---|---|---|
-| Home page | ✅ | Server-rendered; real featured products + repaired festival calendar |
+| Home page | ✅ | **Festival-first**: next-festival spotlight with countdown, required samagri, recommendations, then the calendar |
 | Product catalogue | ✅ | Paginated, 12/page |
 | Category browse | ✅ | 10 seeded categories |
 | Product detail | ✅ | By slug; shows category, vendor, unit, stock state |
 | Search | ✅ | By name and description (DRF `SearchFilter`) |
 | Sort | ✅ | Price / stock / popularity |
-| Festival browse | ✅ | 7 kits across 10 festivals |
+| Festival browse | ✅ | 7 kits; the type filter is derived from the kits, not hardcoded |
+| Festival calendar | ✅ | Soonest-first, `?limit=` up to 50 |
 | Area-aware storefront | ✅ | Areas served from `/products/areas/`, not hardcoded |
+| **Shared product card** | ✅ | One `ProductCard` for home / catalogue / recommendations |
 
 ### 2.2 Cart and checkout — the required E2E path
 
@@ -206,10 +208,18 @@ Honest list of gaps, so nothing here is mistaken for finished work.
 | Real sales data | ❌ | Forecast trains on synthetic data; order volume is too low to train on |
 | Search relevance tuning | ⚠️ | `icontains` matching; no fuzzy or typo tolerance |
 | Image upload UI | ⚠️ | The field is open in the admin serializer; no upload widget |
-| Consistent product cards | ⚠️ | Cards vary slightly between home, products, and recommendations |
-| Puja-centric landing sections | ⚠️ | Home page still leads with a generic product grid, not a festival-driven one |
 | JWT revocation on password reset | ⚠️ | Access tokens are stateless and last a day, so a reset does not kill existing sessions |
 | Order history for pre-Day-4 orders | ⚠️ | Backfilled with a single event, so their earlier steps show "not recorded" rather than an invented time |
+| Festival-specific kits | ⚠️ | 3 of the 6 soonest festivals have no kit (Ganesh Chaturthi, Haritalika Teej, Indra Jatra). The home page says so plainly and routes to the recommender |
+
+### Fixed on Day 5 (2026-09-19)
+
+| Issue | Detail |
+|---|---|
+| **Home page led with a generic product grid** | The project's differentiator was invisible on the first screen. Now leads with the next festival, its countdown, its required samagri and the recommendations. |
+| **Three product cards had drifted apart** | Home, catalogue and recommendations each had their own markup. The home version omitted the unit and its "+" button had **no handler** — it looked like add-to-cart and did nothing. One shared `ProductCard` now. |
+| **Festival type filter was hardcoded** | Seven types listed in the page. Same trap as the old hardcoded `CITY_CHOICES`: a kit for an unlisted type would exist but be unreachable. Now derived from the kits. |
+| **5 of 10 festivals were unreachable** | `/festivals/upcoming/` was hardcoded to `[:5]`. Now `?limit=` (default 5, max 50). |
 
 ### Fixed on Day 4 (2026-09-19)
 

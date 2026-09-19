@@ -195,6 +195,7 @@ Tables for lists, cards for KPIs and alerts, modals for editing.
 
 | Component | Location | Used for |
 |---|---|---|
+| `ProductCard` | `frontend/src/components/ProductCard.js` | **Every** product tile — home, catalogue, recommendations |
 | `Modal` | `admin-dashboard/src/components/Modal.js` | All create/edit dialogs |
 | `ConfirmDialog` | `admin-dashboard/src/components/ConfirmDialog.js` | Every destructive action |
 | `Badge` | `.badge` + variants | Status pills |
@@ -207,18 +208,64 @@ Tables for lists, cards for KPIs and alerts, modals for editing.
 
 **Accessibility:** modals set `role="dialog"` and `aria-modal`, close on `Escape`
 and backdrop click, lock body scroll, and label their close button. Search inputs
-carry `aria-label`. Icons that convey meaning are paired with text.
+carry `aria-label`. Icons that convey meaning are paired with text, and decorative
+ones (the placeholder lamp, the reason sparkle) are `aria-hidden`.
+
+### `ProductCard` — the single product tile
+There used to be three implementations and they had drifted: the home version
+omitted the unit, used a different category class, and its `+` button **had no
+handler at all** — it looked like an add-to-cart control and did nothing. One
+component now serves home, catalogue and recommendations.
+
+It is a **client** component because the add button needs the cart context. It
+reads that context itself rather than accepting a callback, so the Server
+Component home page can render it without passing a function across the boundary.
+
+| Prop | Effect |
+|---|---|
+| `product` | Required. `in_stock` drives whether the button is enabled |
+| `reason` | Renders the amber "why this was recommended" callout. The text comes from the API — **never invented on the client** |
+| `badge` | Festival-urgency label, e.g. `In 3 days`. Sits opposite the stock badge so both can show |
+| `showAdd` | `false` for a purely navigational card |
+
+**Rule: do not hand-roll a product tile.** Adding a fourth variant is how the
+first three drifted apart.
 
 ---
 
-## 9. Known gaps
+## 9. Home page composition *(rebuilt Day 5)*
+
+The page leads with the festival domain, not the catalogue:
+
+```
+Hero  →  badge carries the next festival and its countdown
+Next-festival spotlight  →  name, date, countdown, description
+                           + its kit box, OR an honest "no ready-made kit yet"
+        alongside       →  Required Samagri panel (only `is_required` items)
+Recommended For You      →  4 cards, each showing the backend's reason text
+The Festival Calendar    →  soonest first; links to the kit if one exists,
+                           otherwise to the recommender
+Featured Samagri         →  8 cards
+Why choose us            →  names the ranking algorithm and whether it was personalised
+```
+
+Two rules this composition follows:
+
+1. **Never link to a filter that will come back empty.** A festival with no kit
+   links to `/recommendations`, not `/festivals?type=…`.
+2. **Say when something does not exist.** 3 of the 6 soonest festivals have no kit.
+   The spotlight states that and offers the next best action rather than showing an
+   empty slot or an unrelated kit.
+
+---
+
+## 10. Known gaps
 
 | # | Gap | Priority |
 |---|---|---|
-| 1 | Product cards differ slightly between home and recommendations | P1 |
-| 2 | Admin modals show only the first validation error, not per-field | P1 |
-| 3 | Older admin tables (orders, festivals) are not responsive below ~700px | P1 |
-| 4 | No dark mode — the palette is light-only by design | P2 |
-| 5 | Focus-visible outlines are browser default, not customised | P2 |
-| 6 | No image upload widget; the `image` field is API-only | P1 |
+| 1 | Older admin tables (orders, festivals) are not responsive below ~700px | P1 |
+| 2 | No dark mode — the palette is light-only by design | P2 |
+| 3 | Focus-visible outlines are browser default, not customised | P2 |
+| 4 | No image upload widget; the `image` field is API-only | P1 |
+| 5 | Festival kit cards are still bespoke markup, not a shared component | P2 |
 | 7 | Toasts are not announced to screen readers (`aria-live` missing) | P1 |

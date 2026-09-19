@@ -398,3 +398,64 @@ class RecommendationEndpointTestCase(TestCase):
         response = self.client.get('/api/festivals/upcoming/')
         self.assertEqual(response.status_code, 200)
         self.assertTrue(len(response.json()) > 0, 'Festival calendar should not be empty')
+
+
+class UpcomingFestivalsLimitTests(TestCase):
+    """`/festivals/upcoming/` used to be hardcoded to `[:5]`.
+
+    With ten active future festivals in the database, five of them were
+    unreachable through the API and nothing said so — the storefront and the home
+    page both silently showed the first five. The cap is now a query parameter, so
+    a caller that wants the whole calendar can ask for it.
+    """
+
+    def setUp(self):
+        self.today = timezone.now().date()
+        UpcomingFestival.objects.all().delete()
+        for i in range(1, 13):
+            UpcomingFestival.objects.create(
+                name=f'Festival {i}',
+                festival_type='other',
+                date=self.today + timedelta(days=i * 5),
+                description='x',
+                is_active=True,
+            )
+        # A past festival must never appear.
+        UpcomingFestival.objects.create(
+            name='Already Happened', festival_type='other',
+            date=self.today - timedelta(days=3), description='x', is_active=True,
+        )
+
+    def test_default_returns_five(self):
+        response = self.client.get('/api/festivals/upcoming/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 5)
+
+    def test_limit_returns_the_whole_calendar(self):
+        response = self.client.get('/api/festivals/upcoming/?limit=12')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 12)
+
+    def test_results_are_soonest_first(self):
+        dates = [f['date'] for f in self.client.get('/api/festivals/upcoming/?limit=5').json()]
+        self.assertEqual(dates, sorted(dates), 'the calendar must read soonest-first')
+
+    def test_past_festivals_are_never_returned(self):
+        names = [f['name'] for f in self.client.get('/api/festivals/upcoming/?limit=50').json()]
+        self.assertNotIn('Already Happened', names)
+
+    def test_limit_is_capped(self):
+        """An unbounded limit would let a caller dump the whole table."""
+        response = self.client.get('/api/festivals/upcoming/?limit=9999')
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(response.json()), 50)
+
+    def test_limit_floor_is_one(self):
+        response = self.client.get('/api/festivals/upcoming/?limit=0')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+
+    def test_invalid_limit_falls_back_to_default(self):
+        response = self.client.get('/api/festivals/upcoming/?limit=abc')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 5)
