@@ -1,0 +1,24 @@
+# The two Next.js frontends are independent git repositories with their own history.
+# They are excluded here so this repo never records them as gitlinks/submodules.
+frontend/
+admin-dashboard/
+
+# Assistant project data (memory, session state) — not part of the deliverable
+.workbuddy-ai/
+
+# Python
+backend/venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Local env / secrets
+.env
+.env.local
+*.local
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp

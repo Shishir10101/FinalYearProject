@@ -1,0 +1,164 @@
+from django.contrib.auth.models import User
+from django.db import models
+from django.utils.text import slugify
+
+
+class Area(models.Model):
+    """A deliverable area inside the Kathmandu Valley.
+
+    Replaces the hardcoded three-value ``CITY_CHOICES`` enum that was duplicated
+    in ``accounts.models`` and ``orders.models``. Keeping it as a table means
+    admins can add, rename, or deactivate an area without a code change and a
+    migration — which is what "area management" actually requires.
+
+    The ``slug`` values of the three seeded rows are deliberately identical to the
+    old enum values (``kathmandu``/``lalitpur``/``bhaktapur``) so existing
+    ``Order.shipping_city`` and ``UserProfile.city`` data keeps matching.
+    """
+
+    name = models.CharField(max_length=100)
+    slug = models.SlugField(unique=True, blank=True)
+    district = models.CharField(max_length=50, blank=True, help_text='e.g. Kathmandu')
+    delivery_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text='Override the store-wide delivery fee for this area. Blank = use the default.',
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def save(self, *args, **kwargs):
+        # Two areas can legitimately share a name, and an admin can retry a
+        # create. `slugify` alone would collide on the UNIQUE column and raise
+        # IntegrityError, which surfaced as an unhandled 500 from the API.
+        # Suffix instead, so a repeated name is still a usable row.
+        if not self.slug:
+            base = slugify(self.name) or 'area'
+            self.slug = base
+            counter = 1
+            while Area.objects.filter(slug=self.slug).exclude(pk=self.pk).exists():
+                self.slug = f'{base}-{counter}'
+                counter += 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
+class Vendor(models.Model):
+    """A supplier who lists products on the store.
+
+    Linked 1:1 to a Django ``User`` whose ``UserProfile.role`` is ``vendor``.
+    The link is what makes vendor scoping enforceable: a vendor sees only
+    ``Product`` rows whose ``vendor`` FK points at their own row.
+    """
+
+    user = models.OneToOneField(
+        User, on_delete=models.CASCADE, related_name='vendor',
+        help_text='The login account for this vendor.',
+    )
+    shop_name = models.CharField(max_length=200)
+    slug = models.SlugField(unique=True, blank=True)
+    description = models.TextField(blank=True)
+    phone = models.CharField(max_length=15, blank=True)
+    address = models.TextField(blank=True)
+    area = models.ForeignKey(
+        Area, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='vendors',
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['shop_name']
+
+    def save(self, *args, **kwargs):
+        # ``slugify`` can return an empty string (e.g. a shop name written
+        # entirely in Devanagari, which slugify() strips). Setting ``self.slug``
+        # to '' would pass the ``if not self.slug`` guard above but then be
+        # re-evaluated on every save, so fall back to a stable, unique value.
+        base = slugify(self.shop_name) or f'vendor-{self.user_id or "new"}'
+        if not self.slug:
+            self.slug = base
+            counter = 1
+            while Vendor.objects.filter(slug=self.slug).exclude(pk=self.pk).exists():
+                self.slug = f'{base}-{counter}'
+                counter += 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.shop_name
+
+
+class Category(models.Model):
+    name = models.CharField(max_length=100)
+    slug = models.SlugField(unique=True, blank=True)
+    description = models.TextField(blank=True)
+    image = models.ImageField(upload_to='categories/', blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name_plural = 'Categories'
+        ordering = ['name']
+
+    def save(self, *args, **kwargs):
+        # Same UNIQUE-slug hazard as Area: a duplicate category name would raise
+        # an unhandled IntegrityError. `Category` is also the target of the
+        # product-facing admin CRUD, so it must degrade gracefully.
+        if not self.slug:
+            base = slugify(self.name) or 'category'
+            self.slug = base
+            counter = 1
+            while Category.objects.filter(slug=self.slug).exclude(pk=self.pk).exists():
+                self.slug = f'{base}-{counter}'
+                counter += 1
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.name
+
+
+class Product(models.Model):
+    name = models.CharField(max_length=200)
+    slug = models.SlugField(unique=True, blank=True)
+    description = models.TextField()
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    stock = models.PositiveIntegerField(default=0)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='products')
+    vendor = models.ForeignKey(
+        Vendor, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='products',
+        help_text='Supplying vendor. Null for catalogue items with no vendor.',
+    )
+    image = models.ImageField(upload_to='products/', blank=True, null=True)
+    is_featured = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    popularity_score = models.PositiveIntegerField(default=0)
+    unit = models.CharField(max_length=50, default='piece', help_text='e.g., piece, packet, kg, bundle')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-popularity_score', '-created_at']
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = slugify(self.name)
+            # Ensure unique slug
+            counter = 1
+            original_slug = self.slug
+            while Product.objects.filter(slug=self.slug).exclude(pk=self.pk).exists():
+                self.slug = f"{original_slug}-{counter}"
+                counter += 1
+        super().save(*args, **kwargs)
+
+    @property
+    def in_stock(self):
+        return self.stock > 0
+
+    def __str__(self):
+        return self.name
+

@@ -1,0 +1,405 @@
+# API Specification
+
+**Base URL:** `http://127.0.0.1:8000/api`
+**Auth:** JWT bearer (`Authorization: Bearer <access>`)
+**Format:** JSON
+
+> **There is no session authentication on the API.** `djangorestframework-simplejwt`
+> is the only configured authentication class. Django's `force_login()` therefore
+> produces silent 401s in tests — bearer tokens are mandatory. This has bitten
+> this project twice; see `AGENTS.md` §7.
+
+---
+
+## 0. Conventions
+
+### Authentication header
+
+```http
+Authorization: Bearer eyJhbGciOiJIUzI1NiIs...
+```
+
+### Status codes actually returned
+
+| Code | Meaning in this API |
+|---|---|
+| `200` | OK |
+| `201` | Created |
+| `204` | Deleted (no body) |
+| `400` | Validation error — body has per-field arrays |
+| `401` | No token, or token expired |
+| `403` | Authenticated but the role is insufficient |
+| `404` | Not found — **also used for "exists but not yours"**, to avoid leaking existence |
+
+### A note on 403 vs 404
+
+Vendor scoping is applied in `get_queryset()`, not in a permission class. A
+vendor requesting another vendor's product gets **404**, not 403, so they cannot
+even confirm the product exists. Permission-class failures (a customer hitting an
+admin route) return **403**.
+
+### Pagination
+
+List endpoints use `PageNumberPagination` with `PAGE_SIZE = 12`:
+
+```json
+{ "count": 35, "next": "http://.../products/?page=2", "previous": null, "results": [ ... ] }
+```
+
+Endpoints with `pagination_class = None` return a bare JSON array.
+**Always check for `results`** — `len(response)` on a paginated body returns 4
+(the number of keys), which is a silent bug.
+
+---
+
+## 1. Authentication — `/api/auth/`
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/register/` | Public | Create a customer account |
+| `POST` | `/login/` | Public | Obtain an access + refresh token pair |
+| `POST` | `/token/refresh/` | Public | Exchange a refresh token for a new access token |
+| `GET` | `/profile/` | Any | Current user + nested profile |
+| `PUT` | `/profile/` | Any | Update own profile (partial allowed) |
+
+### `POST /login/`
+
+```json
+{ "username": "admin", "password": "admin123" }
+```
+
+→ `200`
+
+```json
+{ "refresh": "...", "access": "..." }
+```
+
+Access token lifetime: 1 day. Refresh: 7 days, with rotation.
+
+### `GET /profile/`
+
+```json
+{
+  "id": 3,
+  "username": "vendor1",
+  "email": "",
+  "first_name": "",
+  "last_name": "",
+  "profile": {
+    "phone": "",
+    "address": "",
+    "city": "kathmandu",
+    "role": "vendor",
+    "is_admin_user": false
+  }
+}
+```
+
+**`profile.role` is read-only.** `PATCH`/`PUT` silently ignore any attempt to
+change it — verified by `core/tests_roles.py::RoleEscalationTests`.
+
+**Role values:** `super_admin` · `admin` · `vendor` · `customer`
+
+---
+
+## 2. Catalogue — `/api/products/`
+
+### Public
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/` | Paginated product list. Filters: `?category=<id>&search=<q>&ordering=price` |
+| `GET` | `/<slug>/` | Product detail, includes `vendor` summary |
+| `GET` | `/featured/` | Featured products |
+| `GET` | `/categories/` | All categories |
+| `GET` | `/categories/<slug>/` | Products in a category |
+| `GET` | `/areas/` | **Delivery areas** (added Day 3) — canonical JSON array |
+
+`GET /areas/` →
+
+```json
+[
+  { "id": 1, "name": "Kathmandu", "slug": "kathmandu", "district": "Kathmandu",
+    "delivery_fee": null, "is_active": true },
+  { "id": 2, "name": "Lalitpur", "slug": "lalitpur", "district": "Lalitpur",
+    "delivery_fee": null, "is_active": true },
+  { "id": 3, "name": "Bhaktapur", "slug": "bhaktapur", "district": "Bhaktapur",
+    "delivery_fee": null, "is_active": true }
+]
+```
+
+`delivery_fee: null` means "use the store-wide default" (`/orders/config/`).
+
+### Admin — vendor-scoped
+
+| Method | Path | Required role | Notes |
+|---|---|---|---|
+| `GET` | `/admin/products/` | any staff | Vendors see **only their own**; managers see all |
+| `POST` | `/admin/products/` | any staff | A vendor's product is force-attributed to them |
+| `GET` | `/admin/products/<id>/` | any staff | 404 if not yours |
+| `PATCH` | `/admin/products/<id>/` | any staff | 404 if not yours |
+| `DELETE` | `/admin/products/<id>/` | any staff | 404 if not yours |
+| `GET`/`POST` | `/admin/categories/` | read: any staff · write: **manager** | Vendors may read the taxonomy |
+| `GET`/`PATCH`/`DELETE` | `/admin/categories/<id>/` | read: any staff · write: **manager** | |
+| `GET`/`POST` | `/admin/areas/` | read: **manager** · write: **manager** | |
+| `GET`/`PATCH`/`DELETE` | `/admin/areas/<id>/` | **manager** | |
+| `GET`/`POST` | `/admin/vendors/` | read: any staff (vendors see only self) · write: **manager** | |
+| `GET`/`PATCH`/`DELETE` | `/admin/vendors/<id>/` | read: any staff (vendors see only self) · write: **manager** | |
+
+**Product create payload**
+
+```json
+{
+  "name": "Pashupatinath Puja Thali",
+  "description": "Complete thali for Monday Shiva puja.",
+  "price": "450.00",
+  "stock": 25,
+  "category": 3,
+  "vendor": 1,
+  "unit": "piece",
+  "is_featured": false,
+  "is_active": true
+}
+```
+
+`name` is required — `""` returns `400`. `category` must be a real id.
+`slug`, `created_at`, `updated_at` are read-only.
+
+> **Spoofing guard.** A vendor sending `"vendor": <someone-else-id>` gets the
+> product assigned to **their own** vendor row. Only a manager can assign an
+> arbitrary vendor. Covered by `test_vendor_created_product_is_attributed_to_them`.
+
+---
+
+## 3. Cart, checkout and orders — `/api/orders/`
+
+### Public
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/config/` | Public | Store configuration |
+
+`GET /config/` →
+
+```json
+{ "delivery_fee": 100, "free_delivery_threshold": null, "currency": "NPR" }
+```
+
+Delivery areas are **not** in this payload — fetch them from `GET /products/areas/`.
+`free_delivery_threshold` is `null`, meaning "no free-delivery offer"; the field
+exists so the storefront does not need a code change to add one.
+
+**Why this endpoint exists.** On Day 1 the delivery fee lived in three places
+(frontend constant, backend default, and nowhere in the stored order), and order
+#9 recorded Rs. 290 while the UI promised Rs. 390. The fee is now served from a
+single setting and stored on the order.
+
+### Cart — authenticated
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/cart/` | Current user's cart with computed totals |
+| `POST` | `/cart/add/` | `{ "product": <id>, "quantity": 1 }` |
+| `PATCH` | `/cart/update/<id>/` | `{ "quantity": 3 }` |
+| `DELETE` | `/cart/remove/<id>/` | Remove a line |
+| `POST` | `/cart/add-kit/<kit_id>/` | Add every item in a festival kit at once |
+
+### Checkout and history
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/checkout/` | Create an order from the cart |
+| `GET` | `/` | Own order history (paginated) |
+| `GET` | `/<id>/` | Own order detail |
+
+`POST /checkout/` body:
+
+```json
+{
+  "shipping_address": "Thamel, Kathmandu",
+  "shipping_city": "kathmandu",
+  "phone": "9800000000",
+  "notes": "",
+  "payment_method": "cod"
+}
+```
+
+Wrapped in `transaction.atomic`: each product's stock is re-checked and
+decremented, and insufficient stock raises `400` rather than overselling.
+
+### Admin — vendor-scoped
+
+| Method | Path | Required | Notes |
+|---|---|---|---|
+| `GET` | `/admin/orders/` | any staff | Vendors see only orders containing **their** products |
+| `PATCH` | `/admin/orders/<id>/` | any staff | `{ "status": "shipped" }` — 404 if the order has none of your products |
+
+An order containing two of a vendor's products appears **once** (`.distinct()`).
+
+---
+
+## 4. Festivals, kits and recommendations — `/api/festivals/`
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `GET` | `/kits/` | Public | Festival kits |
+| `GET` | `/kits/<id>/` | Public | Kit detail with items and computed price |
+| `GET` | `/upcoming/` | Public | Festivals from today forward |
+| `GET` | `/recommendations/` | Public | **Ranked, explainable recommendations** |
+
+### `GET /recommendations/`
+
+```json
+{
+  "festival_context": { "name": "Dashain", "days_until": 18, "date": "2026-10-06" },
+  "meta": {
+    "window_days": 45,
+    "signals": ["festival_required", "user_category", "popularity", "..."],
+    "model": "festivals.recommender.Recommender v1",
+    "explanation": "Ranked by upcoming festival requirements, your past orders, and catalogue popularity."
+  },
+  "results": [
+    {
+      "id": 21,
+      "name": "Janai (Sacred Thread)",
+      "price": "45.00",
+      "recommendation": {
+        "score": 90.0,
+        "urgency": "required",
+        "urgency_label": "Required for Dashain",
+        "reason": {
+          "code": "festival_required",
+          "text": "Required for Dashain in 18 days — marked essential in that festival kit."
+        }
+      }
+    }
+  ]
+}
+```
+
+**Every item carries a `reason`.** There is no random-product path. See
+`docs/AI-RECOMMENDATION.md` for the weight table and worked examples.
+
+### Admin kits
+
+| Method | Path | Required |
+|---|---|---|
+| `GET`/`POST` | `/admin/kits/` | read: any staff · write: **manager** |
+| `GET`/`PATCH`/`DELETE` | `/admin/kits/<id>/` | read: any staff · write: **manager** |
+| `GET`/`POST` | `/admin/kits/<kit_id>/items/` | read: any staff · write: **manager** |
+| `DELETE` | `/admin/kit-items/<id>/` | **manager** |
+
+---
+
+## 5. Analytics — `/api/analytics/`
+
+All endpoints require a staff role. Vendor results are scoped to their own
+products and carry `"scope": "vendor"`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/sales/` | Revenue, order counts, 30-day daily series |
+| `GET` | `/trending/` | Top products by popularity |
+| `GET` | `/inventory/` | Stock levels, low-stock and out-of-stock lists |
+| `GET` | `/predictions/` | Actionable alerts (festival, inventory, forecast) |
+| `GET` | `/demand-forecast/` | **Per-product demand forecast** |
+
+### `GET /sales/`
+
+```json
+{
+  "total_orders": 8,
+  "total_revenue": 8420.0,
+  "revenue_30d": 8420.0,
+  "orders_30d": 8,
+  "revenue_7d": 2100.0,
+  "orders_7d": 2,
+  "total_products": 35,
+  "scope": "all",
+  "status_counts": { "pending": 5, "delivered": 3 },
+  "daily_data": [ { "date": "2026-08-20", "revenue": 0.0, "orders": 0 } ]
+}
+```
+
+`scope` is `"all"` for managers, `"vendor"` for vendors.
+
+### `GET /demand-forecast/`
+
+Query params: `?horizon=30` (1–90) · `?limit=12` (1–50) · `?product=<id>`
+
+```json
+{
+  "data_source": "synthetic",
+  "is_synthetic": true,
+  "provenance_note": "SYNTHETIC DATA: this forecast is fitted on a generated dataset...",
+  "horizon_days": 30,
+  "generated_at": "2026-09-18T...",
+  "forecasts": [
+    {
+      "product": { "id": 1, "name": "Premium Dhoop Batti", "category": "...",
+                   "price": 120.0, "stock": 50 },
+      "forecast_total_units": 34.2,
+      "avg_daily_units": 1.14,
+      "stock_cover_days": 43.9,
+      "restock_needed": false,
+      "projected_shortfall": 0,
+      "metrics": { "mape": 26.2, "mae": 0.81, "rmse": 1.04, "naive_mae": 0.936 },
+      "components": { "weekday_factors": { ... }, "trend": 0.02 },
+      "predictions": [ { "date": "2026-09-19", "units": 1.4 } ]
+    }
+  ],
+  "aggregate": {
+    "total_forecast_units": 412.6,
+    "products_covered": 35,
+    "products_needing_restock": 24,
+    "mean_mape": 26.2
+  },
+  "model": { "name": "seasonal-trend-festival", "version": 1 }
+}
+```
+
+> ### ⚠️ `is_synthetic` is always `true` for this endpoint
+>
+> The model is fitted on generated data, not real orders. The response says so
+> explicitly and in every derived cache. A caller requesting another vendor's
+> product gets `404`.
+
+---
+
+## 6. Role → endpoint matrix
+
+| Endpoint group | customer | vendor | admin | super_admin |
+|---|---|---|---|---|
+| Public catalogue, kits, areas, recommendations | ✅ | ✅ | ✅ | ✅ |
+| Own cart / checkout / own orders | ✅ | ✅ | ✅ | ✅ |
+| `/analytics/*` | ❌ 403 | ✅ *scoped* | ✅ | ✅ |
+| `/products/admin/products/*` | ❌ 403 | ✅ *scoped* | ✅ | ✅ |
+| `/orders/admin/orders/*` | ❌ 403 | ✅ *scoped* | ✅ | ✅ |
+| `/products/admin/categories/*` (read) | ❌ 403 | ✅ | ✅ | ✅ |
+| `/products/admin/categories/*` (write) | ❌ 403 | ❌ 403 | ✅ | ✅ |
+| `/products/admin/areas/*` | ❌ 403 | ❌ 403 | ✅ | ✅ |
+| `/products/admin/vendors/*` (read) | ❌ 403 | ✅ *self only* | ✅ | ✅ |
+| `/products/admin/vendors/*` (write) | ❌ 403 | ❌ 403 | ✅ | ✅ |
+| `/festivals/admin/*` (write) | ❌ 403 | ❌ 403 | ✅ | ✅ |
+
+Verified end-to-end by `backend/verify_day3.py` (55 assertions) and
+`backend/core/tests_roles.py` (47 unit tests).
+
+---
+
+## 7. Error response shape
+
+Field validation (`400`):
+
+```json
+{ "name": ["This field may not be blank."], "price": ["Ensure that there are no more than 10 digits in total."] }
+```
+
+Permission (`403`):
+
+```json
+{ "detail": "You do not have permission to perform this action." }
+```
+
+The admin dashboard's API client extracts `.detail`, `.error`, or
+`.non_field_errors[0]` and shows it to the user — never a stack trace.
