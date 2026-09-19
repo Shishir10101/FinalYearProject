@@ -1,4 +1,7 @@
+from decimal import Decimal
+
 from django.contrib.auth.models import User
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils.text import slugify
 
@@ -21,6 +24,7 @@ class Area(models.Model):
     district = models.CharField(max_length=50, blank=True, help_text='e.g. Kathmandu')
     delivery_fee = models.DecimalField(
         max_digits=10, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(Decimal('0'))],
         help_text='Override the store-wide delivery fee for this area. Blank = use the default.',
     )
     is_active = models.BooleanField(default=True)
@@ -125,7 +129,12 @@ class Product(models.Model):
     name = models.CharField(max_length=200)
     slug = models.SlugField(unique=True, blank=True)
     description = models.TextField()
-    price = models.DecimalField(max_digits=10, decimal_places=2)
+    # A negative price is not a discount, it is a bug: it would subtract from the
+    # cart total. `stock` is a PositiveIntegerField so it is already safe.
+    price = models.DecimalField(
+        max_digits=10, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
     stock = models.PositiveIntegerField(default=0)
     category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='products')
     vendor = models.ForeignKey(

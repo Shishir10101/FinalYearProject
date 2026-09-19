@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.conf import settings
 from django.db import transaction
-from .models import Cart, Order, OrderItem
+from .models import Cart, Order, OrderItem, OrderStatusEvent
 from products.models import Area, Product
 from core.permissions import IsStaffRole, is_manager, vendor_for
 from .serializers import (
@@ -222,11 +222,22 @@ class CheckoutView(APIView):
         # Clear cart
         cart_items.delete()
 
+        # Record the order's history from its very first moment, so the customer
+        # tracker can date every step instead of only showing the current one.
+        OrderStatusEvent.record(
+            order, 'pending', from_status='', changed_by=request.user,
+            note='Order placed by the customer.',
+        )
+
         # Mock payment
         if order.payment_method in ['esewa', 'khalti']:
             order.payment_status = 'paid'
             order.status = 'confirmed'
             order.save()
+            OrderStatusEvent.record(
+                order, 'confirmed', from_status='pending', changed_by=request.user,
+                note='Payment received (mocked gateway).',
+            )
 
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
@@ -236,7 +247,7 @@ class OrderListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Order.objects.filter(user=self.request.user).prefetch_related('items')
+        return Order.objects.filter(user=self.request.user).prefetch_related('items', 'status_events')
 
 
 class OrderDetailView(generics.RetrieveAPIView):
@@ -244,7 +255,7 @@ class OrderDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Order.objects.filter(user=self.request.user).prefetch_related('items')
+        return Order.objects.filter(user=self.request.user).prefetch_related('items', 'status_events')
 
 
 # --- Admin Views ---
@@ -261,7 +272,7 @@ class AdminOrderListView(generics.ListAPIView):
     permission_classes = [IsStaffRole]
 
     def get_queryset(self):
-        qs = Order.objects.all().prefetch_related('items').select_related('user')
+        qs = Order.objects.all().prefetch_related('items', 'status_events').select_related('user')
         if is_manager(self.request.user):
             return qs
         vendor = vendor_for(self.request.user)
@@ -282,3 +293,23 @@ class AdminOrderUpdateView(generics.UpdateAPIView):
         if vendor is None:
             return qs.none()
         return qs.filter(items__product__vendor=vendor).distinct()
+
+    def perform_update(self, serializer):
+        """Persist the change and append a status-history row when status moves.
+
+        The event is written only for a genuine transition. Saving the same status
+        back (or changing only ``payment_status``) must not litter the history with
+        duplicate entries, otherwise the customer's timeline fills up with
+        meaningless repeated steps.
+        """
+        order = self.get_object()
+        previous_status = order.status
+        updated = serializer.save()
+        if updated.status != previous_status:
+            OrderStatusEvent.record(
+                updated,
+                updated.status,
+                from_status=previous_status,
+                changed_by=self.request.user,
+                note='Status updated by staff.',
+            )

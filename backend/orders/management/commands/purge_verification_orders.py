@@ -21,6 +21,7 @@ from orders.models import Cart, Order
 # safer than matching on "everything that is not seeded", because a real
 # customer order placed during a demo must never be swept up.
 MARKERS = [
+    'verify_day4.py',
     'verify_day3c.py',
     'created by verify_day3b.py',
     'verify_day3.py',
@@ -32,6 +33,7 @@ MARKERS = [
 EXTRA_ADDRESS_MARKERS = [
     'E2E Area Override Address',
     'E2E Status Ladder Address',
+    'E2E Status History Address',
     'E2E Verification Address',
 ]
 

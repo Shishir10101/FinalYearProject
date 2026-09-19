@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import UserProfile
+from .password_reset import decode_uid, check_token
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -93,3 +96,50 @@ class ProfileUpdateSerializer(serializers.ModelSerializer):
         profile.save()
 
         return instance
+
+
+INVALID_LINK_MESSAGE = 'This reset link is invalid or has expired. Please request a new one.'
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """Validates a reset link and the replacement password.
+
+    The new password is checked with Django's configured validators
+    (``AUTH_PASSWORD_VALIDATORS``), not just a length rule, so a reset cannot be
+    used to set a password weaker than registration would have allowed.
+    """
+
+    uid = serializers.CharField()
+    token = serializers.CharField()
+    new_password = serializers.CharField(write_only=True)
+    new_password2 = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        if data['new_password'] != data['new_password2']:
+            raise serializers.ValidationError(
+                {'new_password2': 'The two passwords do not match.'}
+            )
+
+        # A bad uid and a bad token produce the identical message. Distinguishing
+        # them would let a caller probe which account ids are real.
+        user = decode_uid(data['uid'])
+        if user is None or not check_token(user, data['token']):
+            raise serializers.ValidationError({'token': INVALID_LINK_MESSAGE})
+
+        try:
+            validate_password(data['new_password'], user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'new_password': list(exc.messages)})
+
+        data['user'] = user
+        return data
+
+    def save(self, **kwargs):
+        user = self.validated_data['user']
+        user.set_password(self.validated_data['new_password'])
+        user.save(update_fields=['password'])
+        return user

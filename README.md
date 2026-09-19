@@ -95,7 +95,7 @@ Base: `http://127.0.0.1:8000/api`
 
 | Group | Endpoints |
 |---|---|
-| Auth | `auth/register/` · `auth/login/` · `auth/token/refresh/` · `auth/profile/` |
+| Auth | `auth/register/` · `auth/login/` · `auth/token/refresh/` · `auth/profile/` · `auth/password-reset/` · `auth/password-reset/confirm/` |
 | Products | `products/` · `products/featured/` · `products/categories/` · `products/<slug>/` |
 | Festivals | `festivals/kits/` · `festivals/kits/<id>/` · `festivals/upcoming/` · `festivals/recommendations/` |
 | Cart | `orders/cart/` · `orders/cart/add/` · `orders/cart/update/<id>/` · `orders/cart/remove/<id>/` · `orders/cart/add-kit/<kit_id>/` |
@@ -150,13 +150,18 @@ SUPER ADMIN  →  manages administrators, areas, system
 ## Features
 
 **Shopping** — browse · search · categories · product details · cart · checkout ·
-order history · ready-made festival kits · add-whole-kit-to-cart
+order history · **order status timeline with real per-step timestamps** ·
+ready-made festival kits · add-whole-kit-to-cart
+
+**Account** — register · login · JWT refresh · profile edit · **password reset**
+(real token flow: single-use, expires in 24 h, no account enumeration)
 
 **Festivals** — festivals · pujas · required samagri · product relationships · curated kits
 
-**Vendor** — product management · inventory · orders _(role not yet enforced — Day 3)_
+**Vendor** — product management · inventory · orders · scoped to their own rows
 
-**Admin** — products · orders · festival kits · dashboard · **demand forecast**
+**Admin** — products · orders · festival kits · dashboard · **demand forecast** ·
+catalog settings (categories, delivery areas) · per-field validation on every form
 
 **AI**
 - **Samagri recommendation** — ranked and explainable. Seven weighted signals; every
@@ -174,7 +179,7 @@ order history · ready-made festival kits · add-whole-kit-to-cart
 cd frontend        && npm run build      # must pass
 cd admin-dashboard && npm run build      # must pass
 cd backend         && venv/Scripts/python.exe manage.py check
-cd backend         && venv/Scripts/python.exe manage.py test    # 113 tests
+cd backend         && venv/Scripts/python.exe manage.py test    # 178 tests
 ```
 
 Live end-to-end checks (backend must be running on :8000):
@@ -184,17 +189,28 @@ cd backend && venv/Scripts/python.exe verify_day2.py     #  68 assertions
 cd backend && venv/Scripts/python.exe verify_day3.py     #  55 assertions
 cd backend && venv/Scripts/python.exe verify_day3b.py    #  41 assertions
 cd backend && venv/Scripts/python.exe verify_day3c.py    # 128 assertions (full purchase path)
+cd backend && venv/Scripts/python.exe verify_day4.py     #  88 assertions (history, reset, validation)
 cd backend && venv/Scripts/python.exe manage.py purge_verification_orders   # clean up after
+cd backend && venv/Scripts/python.exe manage.py purge_verification_users
 ```
 
-Run `purge_verification_orders` afterwards: the verifiers exercise the real checkout API,
-so they create real orders. The command removes only rows carrying a verifier marker and
-never touches the seeded demo orders. `--dry-run` lists what it would remove.
+Run the purge commands afterwards: the verifiers exercise the real checkout and
+registration APIs, so they create real orders and a throwaway account. The commands
+remove only rows carrying a verifier marker and never touch the seeded demo data.
+`--dry-run` lists what would be removed.
+
+Catch undefined-identifier bugs before they reach a click handler — the project's
+ESLint config does not enable `no-undef`, so `next lint` stays silent:
+
+```bash
+cd frontend        && npx eslint --rule '{"no-undef":"error"}' src/
+cd admin-dashboard && npx eslint --rule '{"no-undef":"error"}' src/
+```
 
 No feature is complete until its build is clean and the flow has been exercised end to end.
 
-**Last verified:** 2026-09-18 — **113 unit tests + 292 live E2E assertions** passing, both
-frontends building clean, 9/9 API routes, 10/10 customer routes and 7/7 admin routes
-returning 200, authorization tests correct, and the database back to its seeded state
-(8 orders · 35 products · 3 areas · 1 vendor · 0 scratch rows) after purging.
+**Last verified:** 2026-09-19 — **178 unit tests + 380 live E2E assertions** passing, both
+frontends building clean (13/13 customer routes, 10/10 admin routes), authorization tests
+correct, and the database back to its seeded state (8 orders · 35 products · 10 categories ·
+3 areas · 1 vendor · 8 status events · 0 scratch rows) after purging.
 

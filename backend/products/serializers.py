@@ -82,6 +82,29 @@ class ProductAdminSerializer(serializers.ModelSerializer):
 
 
 class CategoryAdminSerializer(serializers.ModelSerializer):
+    """Write serializer for the catalogue's category list.
+
+    Validates that the name is unique. The model's ``save()`` suffixer (added to
+    stop a duplicate name raising an unhandled ``IntegrityError``) made the API
+    *accept* a second "Puja Oils & Ghee" and quietly file it as
+    ``puja-oils-ghee-1``. Surviving the crash is right; silently creating a
+    duplicate category is not — it splits one category into two and the
+    storefront then shows both. The suffixer stays as the last-resort safety net;
+    this check is what actually stops it happening.
+    """
+
     class Meta:
         model = Category
         fields = '__all__'
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError('Please enter a name.')
+
+        clash = Category.objects.filter(name__iexact=name)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError('A category with this name already exists.')
+        return name

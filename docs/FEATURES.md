@@ -56,6 +56,8 @@ HOME → CATEGORY/FESTIVAL → PRODUCT LIST → DETAILS → ADD TO CART
 | Order confirmation | ✅ | Redirects to the order detail page |
 | Order history | ✅ | `/account`, paginated, 5 shown |
 | **Order status timeline** | ✅ | 5-step tracker + a distinct cancelled state |
+| **Real status timestamps** | ✅ | Each step shows *when* it happened, from `OrderStatusEvent` |
+| **Cancellation time** | ✅ | The cancelled state carries its own timestamp |
 
 ### 2.3 Account
 
@@ -65,7 +67,7 @@ HOME → CATEGORY/FESTIVAL → PRODUCT LIST → DETAILS → ADD TO CART
 | JWT refresh | ✅ (access 1 day, refresh 7 days, rotation on) |
 | Profile view + edit | ✅ |
 | Area dropdown from the DB | ✅ |
-| Password reset | ❌ Not built (P1) |
+| **Password reset** | ✅ Real token flow — works once, expires in 24 h, no account enumeration |
 | Wishlist / reviews | ❌ Not built (P1) |
 
 ### 2.4 Recommendations
@@ -118,9 +120,10 @@ Every async surface shows **loading · success · empty · error**:
 | Customer order detail | skeletons | n/a | distinguishes *not found* from *load failed* |
 | Customer order list | skeleton cards | "No orders yet" + CTA | message + Try again |
 
-**Known gap:** `admin-dashboard` modals show a single general error rather than
-per-field validation. The server returns per-field arrays; the UI surfaces only
-the first message. Adequate, but a P1 polish item.
+**Known gap:** `admin-dashboard` modals show per-field validation, driven by the
+DRF error body, with a safety net that renders any field the server rejects that
+has no input on screen. A single general banner is used only when the error is not
+attributable to a field.
 
 ---
 
@@ -194,21 +197,32 @@ Honest list of gaps, so nothing here is mistaken for finished work.
 
 | Feature | Status | Impact |
 |---|---|---|
-| Password reset | ❌ | A demo account cannot recover a forgotten password |
 | Payment gateway | ❌ | `esewa`/`khalti` are **mocked** — they just mark the order paid |
 | Reviews / ratings | ❌ | No social proof on product pages |
 | Wishlist | ❌ | — |
 | Vendor self-service UI | ❌ | Vendor accounts work via the API; no dedicated screen |
 | Kit editor UI | ❌ | Endpoints work; no drag-and-drop kit builder |
-| Order status history | ⚠️ | The timeline is **derived from current status** — it cannot show *when* each step happened |
-| Email / SMS | ❌ | No notification on order placement or status change |
+| Email / SMS notifications | ❌ | Reset mail sends (console backend in dev); no order notifications |
 | Real sales data | ❌ | Forecast trains on synthetic data; order volume is too low to train on |
 | Search relevance tuning | ⚠️ | `icontains` matching; no fuzzy or typo tolerance |
 | Image upload UI | ⚠️ | The field is open in the admin serializer; no upload widget |
 | Consistent product cards | ⚠️ | Cards vary slightly between home, products, and recommendations |
 | Puja-centric landing sections | ⚠️ | Home page still leads with a generic product grid, not a festival-driven one |
-| Per-field validation in admin modals | ⚠️ | Errors show the first message only, not per-field |
-| `aria-live` on toasts | ⚠️ | Screen readers are not announced to without it |
+| JWT revocation on password reset | ⚠️ | Access tokens are stateless and last a day, so a reset does not kill existing sessions |
+| Order history for pre-Day-4 orders | ⚠️ | Backfilled with a single event, so their earlier steps show "not recorded" rather than an invented time |
+
+### Fixed on Day 4 (2026-09-19)
+
+| Issue | Detail |
+|---|---|
+| **Order timeline could not say *when*** | Derived from `Order.status`, so every completed step was permanently undated. Now driven by an append-only `OrderStatusEvent` table. |
+| **Password reset did not exist** | Now a real `PasswordResetTokenGenerator` flow, throttled, single-use, with no account enumeration. |
+| **`Catalog Settings` threw on every button** | Four undefined `setFieldError` calls — every New/Edit button raised `ReferenceError` before its dialog opened. |
+| **Per-field validation was dead code** | The products modal always set a general banner, so the per-field spans were unreachable. |
+| **Negative price accepted** | Would subtract from the cart total. Now rejected. |
+| **Negative delivery fee accepted** | The store would have paid the customer to deliver. Now rejected. |
+| **Duplicate category names accepted silently** | Filed as `puja-oils-ghee-1`, splitting one category into two. Now rejected. |
+| **No rollback path existed** | `backend/` and the project root were not git repositories; the Day 1–3 work was uncommitted everywhere. |
 
 ### Fixed in the final pass (were broken, now working)
 
@@ -236,16 +250,26 @@ The path that works end to end today.
 7.  Checkout → pick an area (fetched from the DB) → place order
 8.  Order confirmation → **status timeline** shows step 1 active
 9.  /account → order appears in history with live status
-10. /recommendations → every card explains *why* it was recommended
-11. admin :3001 login as admin/admin123
-12. Products → create a product, edit its price, toggle it inactive
-13. Catalog Settings → add a delivery area with a fee override
-14. Back to customer checkout → the new area appears with its fee
-15. Log out, log in as vendor1/vendor1234
-16. Dashboard shows 12 products, not 35 — vendor scoping is visible
-17. Products → only their own rows; no "Catalog Settings" in the sidebar
-18. Demand Forecast → synthetic banner visible, restock table, MAPE per product
+10. Open the order → **each completed step shows the time it happened**
+11. /recommendations → every card explains *why* it was recommended
+12. Log out → "Forgot password?" → enter `test@example.com`
+13. The dev panel shows the reset link (no mailbox configured) → open it
+14. Choose a new password → sign in with it
+15. admin :3001 login as admin/admin123
+16. Products → create a product, edit its price, toggle it inactive
+17. Products → try price `-5` → the field itself shows the error
+18. Catalog Settings → add a delivery area with a fee override
+19. Back to customer checkout → the new area appears with its fee
+20. Log out, log in as vendor1/vendor1234
+21. Dashboard shows 12 products, not 35 — vendor scoping is visible
+22. Products → only their own rows; no "Catalog Settings" in the sidebar
+23. Orders → change a status; the "Last change" column updates
+24. Demand Forecast → synthetic banner visible, restock table, MAPE per product
 ```
 
 **Demo credentials:** `admin/admin123` (super admin) · `vendor1/vendor1234` (vendor)
 · `testuser/test1234` (customer)
+
+> Note: the reset in step 13 changes a demo password. Use the customer account, and
+> either set it back to `test1234` afterwards or accept the new one for the rest of
+> the session. `PASSWORD_RESET_EXPOSE_LINK` must be `False` in any real deployment.

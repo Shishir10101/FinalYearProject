@@ -214,6 +214,44 @@ column — it is always derivable.
 | `quantity` | positive int | |
 | `price` | decimal(10,2) | **Snapshot** unit price |
 
+#### `OrderStatusEvent` *(added Day 4)*
+
+Append-only history of an order's status transitions.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | PK | |
+| `order` | FK → `Order`, CASCADE | |
+| `from_status` | varchar(20) | `''` for the order's first event |
+| `to_status` | varchar(20) | Indexed together with `order` + `created_at` |
+| `note` | varchar(255) | e.g. `Order placed by the customer.` |
+| `changed_by` | FK → `User`, SET_NULL, nullable | NULL for customer-placed events |
+| `created_at` | datetime | `default=timezone.now`, **not** `auto_now_add` |
+
+Ordering is `('created_at', 'id')` — oldest first, with `id` breaking ties so two
+events written in one transaction still read back deterministically.
+
+**Why it exists.** The order timeline used to be derived from `Order.status`.
+That answers "where is my order" but never "when did it get there" — the
+transitions were simply not stored, so every completed step was permanently
+undated. `OrderSerializer.get_timeline()` now reads real timestamps from this
+table.
+
+**Why `default=timezone.now` and not `auto_now_add`.** `auto_now_add=True`
+silently discards any value passed to the constructor. The backfill migration
+(`orders/0004`) needs to stamp historical orders with their real
+`Order.created_at`; with `auto_now_add` every pre-existing order would have been
+dated "now". This is the same class of trap as the seed migrations that shipped a
+blank slug, because historical models inside a migration have no overridden
+`save()`.
+
+**`at` may legitimately be null.** A step with no recorded event returns
+`at: null` and the UI renders "not recorded". Orders placed before Day 4 have a
+single backfilled event, so their earlier steps have no timestamp. Borrowing
+`created_at` for them would be inventing a delivery date. The one honest
+exception is `pending`: an order *was* necessarily placed at `Order.created_at`,
+so that value is used when no event records it.
+
 ---
 
 ### 3.4 `festivals` — the domain differentiator

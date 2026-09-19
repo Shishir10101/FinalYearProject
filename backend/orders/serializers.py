@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Cart, Order, OrderItem
+from .models import Cart, Order, OrderItem, ORDER_STATUS_CHOICES
 from products.models import Area
 from products.serializers import ProductListSerializer
 
@@ -48,24 +48,53 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_timeline(self, obj):
         """Progress steps for the customer-facing order tracker.
 
-        Derived from ``status`` rather than a separate history table. That is a
-        deliberate trade-off: it is accurate for the current state but cannot show
-        *when* each step happened, because nothing records those timestamps. A
-        real deployment should add an ``OrderStatusEvent`` table; doing so now
-        would add a migration and a write path for a demo that only needs to show
-        where an order currently stands.
+        Each step carries an ``at`` timestamp taken from a real
+        ``OrderStatusEvent`` row, so the tracker can say *when* an order was
+        confirmed, packed, dispatched and delivered — not merely where it stands
+        now. Before ``OrderStatusEvent`` existed the timeline was derived from
+        ``Order.status`` alone and every step was permanently undated.
+
+        ``at`` is ``None`` for a step with no recorded event, which the UI renders
+        as "not recorded". Orders placed before status tracking was introduced
+        have a single backfilled event, so their earlier steps legitimately have
+        no timestamp. Borrowing ``created_at`` for those would be inventing a
+        delivery date.
+
+        The one honest exception is ``pending``: an order *was* necessarily placed
+        at ``Order.created_at``, so that value is used when no event records it.
 
         ``cancelled`` is terminal and does not fit a linear progression, so it is
-        returned as a single-step timeline.
+        returned as its own two-step timeline.
         """
+        events = list(obj.status_events.all())
+
+        # Earliest moment each status was reached. `setdefault` (not assignment)
+        # so a status that is somehow reached twice keeps its first timestamp.
+        reached_at = {}
+        for event in events:
+            reached_at.setdefault(event.to_status, event.created_at)
+
+        status_labels = dict(ORDER_STATUS_CHOICES)
+        history = [
+            {
+                'status': event.to_status,
+                'label': status_labels.get(event.to_status, event.to_status),
+                'at': event.created_at,
+            }
+            for event in events
+        ]
+
         if obj.status == 'cancelled':
             return {
                 'steps': [
-                    {'key': 'pending', 'label': 'Order Placed', 'state': 'done'},
-                    {'key': 'cancelled', 'label': 'Cancelled', 'state': 'cancelled'},
+                    {'key': 'pending', 'label': 'Order Placed', 'state': 'done',
+                     'at': reached_at.get('pending') or obj.created_at},
+                    {'key': 'cancelled', 'label': 'Cancelled', 'state': 'cancelled',
+                     'at': reached_at.get('cancelled')},
                 ],
                 'current': 'cancelled',
                 'is_terminal': True,
+                'history': history,
             }
 
         steps_def = [
@@ -90,12 +119,16 @@ class OrderSerializer(serializers.ModelSerializer):
                 state = 'current'
             else:
                 state = 'upcoming'
-            steps.append({'key': key, 'label': label, 'state': state})
+            at = reached_at.get(key)
+            if at is None and key == 'pending':
+                at = obj.created_at
+            steps.append({'key': key, 'label': label, 'state': state, 'at': at})
 
         return {
             'steps': steps,
             'current': obj.status,
             'is_terminal': is_finished,
+            'history': history,
         }
 
 

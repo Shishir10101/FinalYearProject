@@ -61,6 +61,8 @@ Endpoints with `pagination_class = None` return a bare JSON array.
 | `POST` | `/token/refresh/` | Public | Exchange a refresh token for a new access token |
 | `GET` | `/profile/` | Any | Current user + nested profile |
 | `PUT` | `/profile/` | Any | Update own profile (partial allowed) |
+| `POST` | `/password-reset/` | Public | Request a reset link *(Day 4)* |
+| `POST` | `/password-reset/confirm/` | Public | Set a new password with uid + token *(Day 4)* |
 
 ### `POST /login/`
 
@@ -99,6 +101,74 @@ Access token lifetime: 1 day. Refresh: 7 days, with rotation.
 change it — verified by `core/tests_roles.py::RoleEscalationTests`.
 
 **Role values:** `super_admin` · `admin` · `vendor` · `customer`
+
+### `POST /password-reset/`
+
+```json
+{ "email": "test@example.com" }
+```
+
+→ `200` — **the same response whether or not the address has an account:**
+
+```json
+{ "message": "If an account exists for that email address, a password reset link has been sent. Please check your inbox." }
+```
+
+With `PASSWORD_RESET_EXPOSE_LINK` on (it defaults to `DEBUG`) two extra fields are
+added so the flow can be demonstrated without a mailbox:
+
+```json
+{
+  "message": "…",
+  "reset_url": "http://localhost:3000/auth/reset-password?uid=Mg&token=…",
+  "dev_note": "Development build only: this link is returned in the response because no mailbox is configured. It is never returned when PASSWORD_RESET_EXPOSE_LINK is off."
+}
+```
+
+> ⚠️ Returning the link **is** account enumeration — a link can only exist for a
+> real account. That is why it is a flag, why it is asserted to leak exactly those
+> two fields and nothing else, and why the production configuration
+> (`PASSWORD_RESET_EXPOSE_LINK = False`) is separately asserted to be
+> byte-identical for known and unknown addresses. **Never enable it in a real
+> deployment.**
+
+Rate limited to 10/min per IP (`password_reset` throttle scope). A mail delivery
+failure is logged, not surfaced — a 500 only happens when an account matched,
+which would leak the same fact the generic message protects.
+
+### `POST /password-reset/confirm/`
+
+```json
+{
+  "uid": "Mg",
+  "token": "df5wtr-b562b98ad637fd880fa8a3e27f46d2c1",
+  "new_password": "BrandNewPass456",
+  "new_password2": "BrandNewPass456"
+}
+```
+
+→ `200`
+
+```json
+{ "message": "Your password has been reset. You can now sign in with your new password." }
+```
+
+→ `400` — field-keyed, and deliberately identical for a bad uid and a bad token:
+
+```json
+{ "token": ["This reset link is invalid or has expired. Please request a new one."] }
+```
+
+Other `400` shapes: `{"new_password2": ["The two passwords do not match."]}` and
+`{"new_password": ["This password is too short. It must contain at least 8 characters."]}`
+(the new password runs through Django's `AUTH_PASSWORD_VALIDATORS`).
+
+**A link works exactly once.** The token hash includes the password hash and
+`last_login`, so using it — or logging in in the meantime — invalidates it. No
+token is stored server-side and no cleanup job is needed.
+
+**Known limitation:** existing JWTs are not revoked by a reset. Access tokens are
+stateless and last 1 day.
 
 ---
 
@@ -226,6 +296,47 @@ single setting and stored on the order.
 
 Wrapped in `transaction.atomic`: each product's stock is re-checked and
 decremented, and insufficient stock raises `400` rather than overselling.
+
+Checkout also opens the order's status history with a `pending` event. A mocked
+`esewa`/`khalti` payment adds a second `pending → confirmed` event.
+
+### `timeline` — the order status tracker *(timestamps added Day 4)*
+
+Every order payload (`/`, `/<id>/`, and the admin list) carries a `timeline`
+object:
+
+```json
+{
+  "steps": [
+    { "key": "pending",    "label": "Order Placed",     "state": "done",    "at": "2026-09-19T17:04:11.482Z" },
+    { "key": "confirmed",  "label": "Confirmed",        "state": "done",    "at": "2026-09-19T17:04:12.117Z" },
+    { "key": "processing", "label": "Preparing",        "state": "current", "at": "2026-09-19T17:06:40.009Z" },
+    { "key": "shipped",    "label": "Out for Delivery", "state": "upcoming","at": null },
+    { "key": "delivered",  "label": "Delivered",        "state": "upcoming","at": null }
+  ],
+  "current": "processing",
+  "is_terminal": false,
+  "history": [
+    { "status": "pending",    "label": "Pending",    "at": "2026-09-19T17:04:11.482Z" },
+    { "status": "confirmed",  "label": "Confirmed",  "at": "2026-09-19T17:04:12.117Z" },
+    { "status": "processing", "label": "Processing", "at": "2026-09-19T17:06:40.009Z" }
+  ]
+}
+```
+
+- `state` is one of `done` · `current` · `upcoming` · `cancelled`.
+- `at` comes from a real `OrderStatusEvent` row, or is **`null`** when the step has
+  no recorded event. `null` is rendered as "not recorded" — it is never
+  back-filled with a plausible-looking time. Orders placed before Day 4 have a
+  single backfilled event, so their earlier steps are legitimately undated.
+  `pending` falls back to `Order.created_at`, because an order *was* necessarily
+  placed at that moment.
+- A `delivered` order is terminal and its last step is `done`, not `current` —
+  otherwise a completed order looks permanently in progress.
+- `cancelled` does not fit a linear progression, so it returns its own two-step
+  timeline (`pending` + `cancelled`) with `is_terminal: true`.
+- `history` carries **no** note text and **no** staff identity. It is a
+  customer-facing progress list, not a staff audit log.
 
 ### Admin — vendor-scoped
 

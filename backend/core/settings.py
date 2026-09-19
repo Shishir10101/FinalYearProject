@@ -113,6 +113,12 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 12,
+    'DEFAULT_THROTTLE_RATES': {
+        # Applied to the password-reset endpoints. The request endpoint sends
+        # mail and the confirm endpoint is a credential-guessing surface, so
+        # neither should be freely hammerable.
+        'password_reset': '10/min',
+    },
 }
 
 # JWT Settings
@@ -131,3 +137,23 @@ CORS_ALLOW_ALL_ORIGINS = True  # Dev only; restrict in production
 # exposed to both frontends via GET /api/orders/config/ so the UI never
 # hardcodes the amount.
 DELIVERY_FEE = 100
+
+# Email
+# The console backend writes the message to stdout, so `runserver` shows the
+# real reset email in its terminal. It is a genuine send through Django's mail
+# machinery — not a stub that pretends to deliver — it simply has no SMTP host
+# configured, which is the correct setup for a local demo.
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+DEFAULT_FROM_EMAIL = 'Puja Samagri Store <no-reply@pujasmagri.com>'
+
+# Where the customer storefront lives, used to build absolute links in email.
+FRONTEND_URL = 'http://localhost:3000'
+
+# Password reset links stay valid for 24 hours (Django's default is 3 days).
+PASSWORD_RESET_TIMEOUT = 60 * 60 * 24
+
+# DEV ONLY. When true, POST /api/auth/password-reset/ also returns the reset
+# link in its JSON body so the flow can be demonstrated without a mailbox.
+# It must be False anywhere real: it hands a working reset link to whoever
+# asked, which is equivalent to no reset protection at all.
+PASSWORD_RESET_EXPOSE_LINK = DEBUG

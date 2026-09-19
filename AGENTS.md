@@ -112,6 +112,12 @@ truth for who may do what). See §8.
   **Never change those three slugs** without a data migration.
 - `KitItem` has `is_required` — this is the **Required Samagri** mechanism. Use it.
 - `OrderItem` **snapshots** `product_name` and `price`. Never replace this with a live FK read.
+- `OrderStatusEvent` (Day 4) is an **append-only** log of status transitions. It is written from
+  exactly two places — `CheckoutView` and `AdminOrderUpdateView.perform_update()` — and only for a
+  genuine change. Never write one for an unchanged status: the customer's timeline fills with
+  duplicate steps. `created_at` uses `default=timezone.now`, **not** `auto_now_add`, so the
+  backfill migration could preserve real historical timestamps. `timeline.steps[].at` is `null`
+  when nothing was recorded, and the UI must say "not recorded" rather than invent a time.
 - `FestivalKit.total_price` / `original_price` are `@property` methods that recompute from
   items on every access. Do not duplicate this math in a serializer.
 - `SyntheticSalesRecord.is_synthetic` is always `True`. It is stored per row so the
@@ -197,13 +203,20 @@ venv/Scripts/python.exe manage.py runserver 8000      # :8000
 venv/Scripts/python.exe manage.py makemigrations
 venv/Scripts/python.exe manage.py migrate
 venv/Scripts/python.exe manage.py seed_data           # reseeds admin/…/testuser
-venv/Scripts/python.exe manage.py test                # 101 tests
+venv/Scripts/python.exe manage.py test                # 178 tests
 venv/Scripts/python.exe manage.py refresh_festivals   # rebuild the festival calendar
 venv/Scripts/python.exe manage.py generate_synthetic_sales   # SYNTHETIC forecast data
+
+# Remove scratch rows left by the verifiers (always run after a verification sweep)
+venv/Scripts/python.exe manage.py purge_verification_orders   # --dry-run supported
+venv/Scripts/python.exe manage.py purge_verification_users    # --dry-run supported
 
 # Live end-to-end verification (server must already be running on :8000)
 venv/Scripts/python.exe verify_day2.py                # 68 assertions
 venv/Scripts/python.exe verify_day3.py                # 55 assertions — roles & CRUD
+venv/Scripts/python.exe verify_day3b.py               # 41 assertions
+venv/Scripts/python.exe verify_day3c.py               # 128 assertions — full shopping flow
+venv/Scripts/python.exe verify_day4.py                # 88 assertions — history, reset, validation
 
 # Frontend — :3000
 cd frontend && npm run dev
@@ -212,6 +225,10 @@ cd frontend && npm run build        # MUST pass before you call anything done
 # Admin dashboard — :3001
 cd admin-dashboard && npm run dev -- -p 3001
 cd admin-dashboard && npm run build
+
+# Catch undefined-variable bugs — the project's ESLint config does NOT enable no-undef,
+# so `next lint` stays silent. Four broken buttons once shipped because of this.
+npx eslint --rule '{"no-undef":"error"}' src/
 
 # Demo credentials (seeded)
 #   admin    / admin123      superuser          → role super_admin
@@ -225,6 +242,12 @@ cd admin-dashboard && npm run build
 > `SAFE_DELETE_BULK_CONFIRM_REQUIRED`, re-run the build with the sandbox disabled, or
 > `rm -rf .next` first and rebuild. Always confirm the real result via `EXIT=$?` and the
 > `Compiled successfully` line, not just the presence of the word "Error".
+>
+> **The guard counts deletions per turn**, so once it has tripped, even a later
+> `rm -f somelog.txt` in the same turn is refused — and if that `rm` is chained with `&&`, the
+> command after it silently never runs. That is how a "failed" build turns out to have never
+> executed at all. Prefer a fresh filename over `rm`, and check the log file for a
+> `Compiled successfully` line before believing a failure.
 
 > **Stale-server trap — this has cost real time twice.** `runserver --noreload` started in a
 > background shell **outlives the shell** if the shell exits abnormally, and keeps the port.
@@ -266,10 +289,22 @@ promise Rs. 100 more than the order recorded.
 6. **`upcomingfestival.date` drives the whole prediction story.** Seed realistic future dates
    relative to *today* — hardcoded past dates silently disable the recommendation and alert logic.
 7. Run `makemigrations` then `migrate`, then `manage.py check`, before declaring DB work done.
+8. **Never use `auto_now_add` on a field a data migration needs to backfill.** `auto_now_add`
+   silently discards any value passed to the constructor, so a backfill cannot preserve a real
+   historical timestamp. Use `default=timezone.now` — that is why `OrderStatusEvent.created_at`
+   is written that way. (Same family of trap as a historical model having no overridden `save()`.)
+9. **Money and quantity fields need a lower bound.** `Product.price` and `Area.delivery_fee`
+   carry `MinValueValidator(0)`. A negative price subtracts from the cart; a negative delivery
+   fee means the store pays the customer. DRF copies model validators onto serializer fields, so
+   a validator on the model covers both the API and the Django admin.
+10. **Uniqueness the model cannot express belongs in the serializer.** `Category.name` is checked
+    case-insensitively in `CategoryAdminSerializer.validate_name`. The slug suffixer in
+    `Category.save()` must stay as the last-resort net — it exists because a duplicate slug was
+    an unhandled `IntegrityError` (HTTP 500) — but it must never be the *only* guard, or a
+    duplicate name is silently filed as `name-1` and one category becomes two.
 
-**`CITY_CHOICES` is currently duplicated in three places** (`accounts/models.py`,
-`orders/models.py`, `accounts/serializers.py`). If you add an `Area` model, define the canonical
-list **once** and import it everywhere. Do not add a fourth copy.
+**`CITY_CHOICES` now lives only in `core/constants.py`** (Day 3). `Area` rows superseded it for
+delivery; import the constant rather than adding another copy.
 
 **`seed_data` exists twice** — `core/management/commands/` and `products/management/commands/`,
 byte-identical. Only `core`'s runs. If you change seeding, change `core`'s; delete the other.
@@ -526,14 +561,32 @@ Minimum loop for any change:
 Keep it in `docs/CURRENT-STATE.md`.
 
 Django tests live in `backend/<app>/tests.py` plus `backend/core/tests_roles.py`.
-There are now **101**, covering the recommender (23), the forecaster (33), and the
-role/scoping system (47). Two live suites cover the rest:
-`verify_day2.py` (68 assertions) and `verify_day3.py` (55 assertions).
+There are now **178**, covering the recommender (23), the forecaster (33), the
+role/scoping system (47), order status history (23), password reset (25) and
+catalogue validation (17). Live suites cover the rest:
+
+| Suite | Assertions |
+|---|---|
+| `verify_day2.py` | 68 |
+| `verify_day3.py` | 55 |
+| `verify_day3b.py` | 41 |
+| `verify_day3c.py` | 128 |
+| `verify_day4.py` | 88 |
+| **Total live** | **380** |
+
+**After any verification sweep, purge what it created** — `purge_verification_orders`
+and `purge_verification_users`, both with `--dry-run`. A verifier that leaves rows
+behind makes the demo order ids drift and can leave a stray login on the system.
 
 > **Test the thing, not its shape.** When the recommender was rebuilt on Day 2, the
 > old tests passed against a broken implementation because they only asserted the
 > *shape* of the response, not the ordering or the explanation. Write assertions
 > that fail when the feature is wrong.
+>
+> The Day 4 password-reset suite is the worked example: "returns 200" passes against
+> an endpoint that does nothing. The tests assert that the new password actually
+> authenticates through `/login/`, that the old one no longer does, and that a
+> second use of the same link is refused.
 
 > **Beware pagination in assertions.** `len(response.json())` on a DRF paginated
 > body returns **4** (the number of keys), not the record count. This produced two
@@ -567,6 +620,26 @@ role/scoping system (47). Two live suites cover the rest:
   endpoints stay behind an admin permission.
 - The admin dashboard's client-side gate (`AdminContext` + `AuthGate`) is a **UX guard, not a
   security boundary**. Never rely on it alone.
+- **`PASSWORD_RESET_EXPOSE_LINK` must be `False` anywhere real.** It defaults to `DEBUG`, and it
+  returns a working reset link in the API response so the flow can be demoed without a mailbox.
+  A link can only exist for a real account, so returning it **is** account enumeration. It is
+  asserted to leak exactly two fields and no more; the production configuration is asserted
+  separately to be byte-identical for known and unknown addresses.
+- **Password-reset endpoints never reveal whether an address is registered.** Same status, same
+  wording, and a bad uid is indistinguishable from a bad token. A mail-delivery failure is logged
+  rather than surfaced, because a 500 only happens when an account matched.
+- **Password reset does not revoke existing JWTs.** Access tokens are stateless and last a day.
+  Do not claim a reset "signs the user out everywhere" — it does not. Real revocation needs a
+  blacklist or a per-user token version.
+- **Bound money fields server-side.** `Product.price` and `Area.delivery_fee` carry
+  `MinValueValidator(0)`; a negative delivery fee means the store pays the customer.
+- **Never put a destructive call in a verifier's cleanup.** A stray `DELETE` once removed a
+  seeded product. Confirm a row is one the script created before deleting it, or mark it and use
+  a purge command.
+- **Check for undefined identifiers when adding UI.** The ESLint config does not enable
+  `no-undef`, so a typo'd state setter builds and lints clean and only fails on click — four
+  buttons in Catalog Settings shipped broken that way. Run
+  `npx eslint --rule '{"no-undef":"error"}' src/` in both frontends.
 
 ---
 
@@ -593,16 +666,24 @@ Full detail in `docs/CURRENT-STATE.md` §Priority. Summary:
 § "What is NOT built"). Before adding anything, re-run the full verification sweep:
 
 ```
-./venv/Scripts/python.exe manage.py test          # 113 unit tests
+./venv/Scripts/python.exe manage.py test          # 178 unit tests
 ./venv/Scripts/python.exe verify_day2.py          # 68 assertions
 ./venv/Scripts/python.exe verify_day3.py          # 55 assertions
 ./venv/Scripts/python.exe verify_day3b.py         # 41 assertions
 ./venv/Scripts/python.exe verify_day3c.py         # 128 assertions
+./venv/Scripts/python.exe verify_day4.py          # 88 assertions
 ./venv/Scripts/python.exe manage.py purge_verification_orders   # clean up after
+./venv/Scripts/python.exe manage.py purge_verification_users
 ```
 
+**Day 4 — trust & honesty pass (2026-09-19)** closed the gaps the docs themselves admitted to:
+real order-status timestamps (`OrderStatusEvent`), a real password reset flow, per-field admin
+validation, three data-integrity holes (negative price, negative delivery fee, duplicate category
+name), a completely broken Catalog Settings page, and the fact that **nothing was under version
+control**. 178 unit tests + 380 live assertions pass.
 
-**P1** wishlist · reviews · password reset · vendor & area analytics · personalized recs
+**P1** wishlist · reviews/ratings · vendor self-service UI · kit editor UI · vendor & area
+analytics · puja-centric home landing · consistent product cards · search relevance
 
 **P2** live payments · notifications · advanced analytics · extra animation
 

@@ -2,7 +2,169 @@
 
 Analysis date: 2026-09-18
 Method: full source inspection + live server probing.
-Last updated: 2026-09-18 (Day 2 complete — see §Day 2 Completed below).
+Last updated: 2026-09-19 (Day 4 complete — see §Day 4 Completed below).
+
+---
+
+## Day 4 Completed (2026-09-19) — trust & honesty pass
+
+**Theme:** close the gaps the documentation itself admitted to, and fix the bugs
+found while doing it. No new headline features; this pass is about the existing
+ones being *true*.
+
+**Verification: 380 live assertions + 178 backend unit tests, all passing.**
+
+| # | Was | Now |
+|---|-----|-----|
+| 1 | The order timeline was **derived** from `Order.status`, so every step was permanently undated — it could say where an order was, never when it got there | **FIXED** — new append-only `OrderStatusEvent` table. Checkout and every admin status change append a row; `timeline.steps[].at` now carries a real timestamp. 23 unit tests. |
+| 2 | Password reset **did not exist** (B9, required by the brief) | **BUILT** — real `PasswordResetTokenGenerator` flow at `POST /api/auth/password-reset/` + `/confirm/`, two storefront pages, throttled. 25 unit tests. |
+| 3 | Admin modals showed one general banner; the per-field markup was dead code | **FIXED** — per-field errors populate from the DRF body, plus a safety net so no error can render invisibly. |
+| 4 | *(found while fixing #3)* **`Catalog Settings` was completely broken** — 4 undefined `setFieldError` calls | **FIXED** — every New/Edit button threw `ReferenceError` before opening its dialog. |
+| 5 | *(found while probing error shapes)* Negative price, negative delivery fee and duplicate category names were all **accepted** | **FIXED** — rejected with a field-level error. |
+| 6 | Every byte of Day 1–3 work was **uncommitted**; `backend/` and the root were not git repos at all | **FIXED** — root repo created (`backend`, `docs`, `AGENTS.md`, `README.md`), both frontends committed. A rollback path now exists. |
+
+### 1. Real order status history
+
+`OrderStatusEvent` (`orders/models.py`) records `from_status → to_status`, a note,
+who changed it, and when. Written from the two places a status can move:
+`CheckoutView` (the initial `pending`, plus `confirmed` for a mocked wallet
+payment) and `AdminOrderUpdateView.perform_update()`.
+
+Three details that matter:
+
+- `created_at` uses `default=timezone.now`, **not** `auto_now_add`. The latter
+  silently discards any value passed to it, so the backfill migration for the
+  eight pre-existing orders could not have preserved their real `created_at`.
+  Locked down by `test_explicit_timestamp_is_preserved`.
+- The event is written **only for a genuine transition**. Re-saving the same
+  status, or changing only `payment_status`, adds nothing — otherwise the
+  customer's timeline fills with meaningless duplicate steps.
+- `at` is `null` for a step with no recorded event, and the UI says
+  "not recorded". The eight seeded orders each have one backfilled event, so
+  their earlier steps are legitimately undated. Borrowing `created_at` for them
+  would be inventing a delivery date. `pending` is the one honest exception: an
+  order *was* necessarily placed at `Order.created_at`.
+
+### 2. Password reset
+
+Django's own token generator, so two security properties come for free: the token
+hash includes the password hash and `last_login`, which means a link stops working
+the moment it is used, and also stops working if the account owner logs in first.
+
+- `POST /api/auth/password-reset/` — always the same 200 and the same wording,
+  whether or not the address has an account. A mail failure is **logged, not
+  surfaced**, because a 500 only ever happens when an account matched, which
+  would leak exactly what the generic message hides.
+- `POST /api/auth/password-reset/confirm/` — validates uid + token, runs the new
+  password through Django's `AUTH_PASSWORD_VALIDATORS` (so a reset cannot set a
+  password that registration would have refused), then sets it.
+- Both endpoints are throttled (`password_reset`, 10/min).
+- A bad uid and a bad token return byte-identical responses, asserted by
+  `test_bad_uid_and_bad_token_are_indistinguishable`.
+- New storefront pages `/auth/forgot-password` and `/auth/reset-password`, plus a
+  "Forgot password?" link on the login form.
+
+**Two honest caveats, recorded rather than hidden:**
+
+1. **`PASSWORD_RESET_EXPOSE_LINK` (`= DEBUG`) returns the reset link in the JSON
+   response.** It exists so the flow can be demonstrated without a mailbox — the
+   console email backend prints the message to the `runserver` terminal. It is
+   account-enumeration by design, so it is asserted explicitly
+   (`test_dev_exposure_leaks_exactly_two_fields_and_nothing_else`) and the
+   production configuration is asserted separately to be byte-identical for
+   known and unknown addresses. **It must be `False` in any real deployment.**
+2. **Existing JWTs survive a password reset.** Access tokens are stateless and
+   last a day, so a stolen token keeps working until it expires. Real revocation
+   needs a blacklist or a per-user token version — deliberately out of scope.
+
+### 3. Admin dashboard validation
+
+- `fieldErrors()` in `admin-dashboard/src/lib/api.js` now joins **all** messages
+  per field instead of keeping only the first, and guarantees a `_general`
+  fallback so an error response can never render as an empty dialog.
+- `products/page.js` had its own weaker copy of that helper, which dropped
+  `non_field_errors`/`detail` into keys nothing rendered — a cross-field
+  rejection would have failed **silently**. It now imports the shared one.
+- The products modal's catch block always set `_general`, so the per-field spans
+  next to each input were unreachable. Both modals now show per-field messages
+  and have a safety net for any field with no input on screen.
+
+### 4. `Catalog Settings` was broken, and lint did not catch it
+
+Four calls to a bare `setFieldError({})` — the state setter lives inside the
+`useCrud` hook and is only reachable as `c.setFieldError`. Every "+ New Category",
+"Edit", "+ New Area" and "Edit" button threw `ReferenceError` before its dialog
+could open.
+
+The project's ESLint config does not enable `no-undef`, so `next lint` was clean.
+Turning it on finds it immediately, and confirms these four were the only ones:
+
+```
+npx eslint --rule '{"no-undef":"error"}' src/
+  166:5  error  'setFieldError' is not defined  no-undef
+  172:5  error  'setFieldError' is not defined  no-undef
+  302:5  error  'setFieldError' is not defined  no-undef
+  313:5  error  'setFieldError' is not defined  no-undef
+```
+
+That command is now the documented way to catch this class of bug.
+
+### 5. Three data-integrity holes
+
+Found by probing the live API for the real error *shapes* the dashboard would
+have to render. All three were accepted:
+
+| Payload | Consequence |
+|---|---|
+| `price: -5` | Subtracts from the cart total |
+| `delivery_fee: -50` on an `Area` | The store pays the customer to deliver |
+| Duplicate category name | Filed as `puja-oils-ghee-1` — one category becomes two, and the storefront shows both |
+
+Fixed with `MinValueValidator(0)` on `Product.price` and `Area.delivery_fee`
+(migration `products/0004`) — DRF copies model validators onto serializer fields,
+so this covers the API and the Django admin — plus a case-insensitive name check
+on `CategoryAdminSerializer`.
+
+`Category.save()`'s slug suffixer **stays**. It exists because a duplicate slug
+raised an unhandled `IntegrityError` (HTTP 500). The name check is what stops
+duplicates happening; the suffixer remains the last-resort safety net for paths
+the check cannot cover, such as two Devanagari names that slugify identically.
+
+### Verification after Day 4
+
+| Suite | Result |
+|---|---|
+| `manage.py test` | **178 pass** (was 136) |
+| `verify_day4.py` | **88/88** |
+| `verify_day2.py` | 68/68 — no regression |
+| `verify_day3.py` | 55/55 — no regression |
+| `verify_day3b.py` | 41/41 — no regression |
+| `verify_day3c.py` | 128/128 — no regression |
+| **Live assertions** | **380** |
+
+- Both frontends build clean: frontend 13/13 routes (was 11 — the two new auth
+  pages), admin 10/10.
+- Authorization **not weakened**: customer 403 on all 10 admin surfaces, admin 200
+  on all 10.
+- Database restored to seeded state after the sweep: 3 users · 35 products
+  (12 vendor-assigned) · 10 categories · 3 areas · 1 vendor · 8 orders · 20 order
+  items · 0 cart lines · 7 kits · 10 active future festivals · 13,600 synthetic
+  rows · **8 status events (the backfill)** · 0 scratch rows.
+- All three demo logins verified working.
+
+### New commands
+
+| Command | Purpose |
+|---|---|
+| `manage.py purge_verification_users` | Removes verifier accounts by username prefix. `--dry-run` supported. |
+| `manage.py purge_verification_orders` | Extended with the `verify_day4.py` marker and the Day-4 scratch address. |
+
+### Docs updated
+
+`CURRENT-STATE.md` (this section), `FEATURES.md` (§6 rewritten — three rows moved
+out of "not built"), `DATABASE-DESIGN.md` (§3.3 `OrderStatusEvent`, §4 migration
+history), `API-SPEC.md` (auth endpoints + timeline shape), `DEVELOPMENT-ROADMAP.md`
+(Day 4 ✅), `AGENTS.md` (§3 model facts, §5 commands, §12 lint), `README.md`.
 
 ---
 

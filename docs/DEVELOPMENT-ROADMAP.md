@@ -224,14 +224,123 @@ timeline. It was replaced with a full pending→delivered ladder that asserts al
 
 ---
 
+## Day 4 — trust & honesty pass ✅ (2026-09-19)
+
+**Theme:** no new headline features. This day exists to make the existing ones *true* —
+to close the gaps the documentation itself admitted to, and to fix what turned up
+while doing it.
+
+### 12. The order timeline could not say *when*
+
+The tracker was derived from the single mutable `Order.status` column. It could
+answer "where is my order" but never "when did it get there" — the transitions were
+simply not stored, so every completed step was permanently undated. Added
+`OrderStatusEvent`, an append-only log written from exactly two places (checkout, and
+`AdminOrderUpdateView.perform_update()`), and only for a genuine transition.
+`timeline.steps[].at` now carries a real timestamp.
+
+`created_at` uses `default=timezone.now`, **not** `auto_now_add`. The latter silently
+discards any value passed to it, so the backfill migration could not have preserved
+the eight existing orders' real `created_at`. There is a regression test for exactly
+this, because it is the same family of trap as the seed migrations that shipped a
+blank vendor slug.
+
+A step with no recorded event returns `at: null` and the UI says "not recorded".
+Borrowing `created_at` would be inventing a delivery date. `pending` is the one
+honest exception — an order *was* necessarily placed at `Order.created_at`.
+
+### 13. Password reset did not exist (B9, required by the brief)
+
+Built on Django's `PasswordResetTokenGenerator`, which buys two properties for free:
+the token hash includes the password hash and `last_login`, so a link stops working
+once used, and also stops working if the owner logs in first. No token column, no
+cleanup job.
+
+Always the same 200 and the same wording whether or not the address has an account. A
+bad uid is byte-identical to a bad token. Both endpoints are throttled. A mail failure
+is logged rather than surfaced, because a 500 only happens when an account matched —
+which would leak the very fact the generic message protects.
+
+Two caveats recorded rather than hidden: `PASSWORD_RESET_EXPOSE_LINK` returns the link
+in the response so the flow can be demoed without a mailbox (it is enumeration by
+design, so it is asserted to leak exactly two fields and the production shape is
+asserted separately), and **a reset does not revoke existing JWTs**.
+
+### 14. `Catalog Settings` was completely broken
+
+Four calls to a bare `setFieldError({})`. The setter lives inside the `useCrud` hook
+and is only reachable as `c.setFieldError`, so every "+ New Category", "Edit",
+"+ New Area" and "Edit" button threw `ReferenceError` before its dialog could open.
+
+The ESLint config does not enable `no-undef`, so `next lint` was clean. Turning it on
+found all four immediately — and confirmed they were the only ones in either app:
+
+```
+npx eslint --rule '{"no-undef":"error"}' src/
+```
+
+### 15. Per-field validation was dead code
+
+The products modal always set `_general`, so the per-field `<span>`s next to each
+input were unreachable. It also had its own weaker copy of `fieldErrors()` that
+dropped `non_field_errors`/`detail` into keys nothing rendered — a cross-field
+rejection would have failed **silently**. Both modals now use the shared helper,
+which joins every message per field and guarantees a fallback, plus a safety net for
+any field with no input on screen.
+
+### 16. Three data-integrity holes
+
+Found by probing the live API for the error *shapes* the dashboard would have to
+render. All three were accepted:
+
+| Payload | Consequence |
+|---|---|
+| `price: -5` | Subtracts from the cart total |
+| `delivery_fee: -50` on an `Area` | The store pays the customer to deliver |
+| Duplicate category name | Filed as `puja-oils-ghee-1` — one category becomes two, both shown in the storefront |
+
+Fixed with `MinValueValidator(0)` (migration `products/0004`) plus a case-insensitive
+name check. The slug suffixer **stays** as the last-resort net for the paths the name
+check cannot cover; the check is what stops duplicates actually happening.
+
+### 17. There was no rollback path at all
+
+`backend/` and the project root were not git repositories, and the entire Day 1–3 body
+of work was uncommitted in both frontends. Created the root repo (covering `backend`,
+`docs`, `AGENTS.md`, `README.md` — the two frontends stay independent), committed all
+three, and added `.gitignore` files.
+
+### Verification
+
+| Suite | Result |
+|---|---|
+| `manage.py test` | **178 pass** (was 136) |
+| `verify_day4.py` | **88/88** |
+| `verify_day2/3/3b/3c` | 68 · 55 · 41 · 128 — **no regression** |
+| **Live assertions** | **380** |
+
+Both frontends build clean (13/13 and 10/10 routes). Authorization not weakened.
+Database restored to seeded state after purging.
+
+### New commands
+
+`manage.py purge_verification_users` (with `--dry-run`) — the reset flow needs a
+throwaway account, and a stray login must not survive the run.
+
+---
+
 ## P1 — after P0 is complete
 
 - Wishlist / favourites
 - Reviews and ratings (needs a new `Review` model)
-- Password reset (real token flow, not a fake success)
+- Vendor self-service screen (API is complete and scoped; no UI exists)
+- Kit editor UI
 - Vendor analytics, area analytics
-- Personalized recommendations driven by order history
-- Richer prediction dashboard (per-category, per-area)
+- Puja-centric home landing (the home page still leads with a generic product grid)
+- Consistent product cards across home / products / recommendations
+- Search relevance tuning (currently `icontains`, no typo tolerance)
+- Image upload widget
+- **JWT revocation on password reset** — needs a blacklist or per-user token version
 
 ## P2 — only if P0 and P1 are done
 
