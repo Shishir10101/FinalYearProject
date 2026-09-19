@@ -2,7 +2,38 @@
 
 Analysis date: 2026-09-18
 Method: full source inspection + live server probing.
-Last updated: 2026-09-19 (Day 7 complete — see §Day 7 Completed below).
+Last updated: 2026-09-19 (Day 8 **in progress** — see §Day 8 below; Day 7 complete).
+
+---
+
+## Day 8 In Progress (2026-09-19) — domain authoring in the admin dashboard
+
+**Theme:** the dashboard can *show* the puja domain but cannot *edit* it.
+
+`/festivals` in `admin-dashboard` makes **no write calls at all** — verified by grep, not
+assumed. The ready-made kits that are a headline feature here can therefore only be created
+or assembled in Django admin at `/admin/`. `/pujas` does not exist in the dashboard at all.
+
+### Done
+
+| # | Gap | Status |
+|---|-----|--------|
+| 1 | `Puja` had public read endpoints and **no write endpoints** | **DONE** — `AdminPujaListCreateView` / `AdminPujaDetailView` under `/api/festivals/admin/pujas/` |
+| 2 | Item rows were **delete-only** (`DestroyAPIView`) | **DONE** — both upgraded to `RetrieveUpdateDestroyAPIView`; quantity and `is_required` are editable |
+| 3 | Item lists inherited `PAGE_SIZE = 12` | **DONE** — `pagination_class = None` on both. Bratabandha has 14 items, Daily Puja has 21; the editor would have silently shown an incomplete kit |
+| 4 | Shared editor component | **DONE** — `admin-dashboard/src/components/ItemManager.js` + `.module.css`, drives kits and rituals from one code path |
+
+### Not done (next session starts here)
+
+| # | Remaining | Note |
+|---|-----------|------|
+| 5 | `/festivals` is still read-only | Wire `ItemManager` in; add create/edit/delete for kits |
+| 6 | `/pujas` page does not exist | Build it, reusing `ItemManager`; add to the sidebar |
+| 7 | Docs (`FEATURES` gaps, `UI-UX-SPEC` inventory) | Not yet updated for the new pages |
+| 8 | No live verifier for the new endpoints | Only unit tests cover them (21) |
+
+**Verification: 257 backend unit tests** (was 236; +21), all passing. Live assertion count
+unchanged at 450 — no new verifier was written for these endpoints yet.
 
 ---
 
@@ -17,7 +48,7 @@ Last updated: 2026-09-19 (Day 7 complete — see §Day 7 Completed below).
 That is a real hole: the usual reason to reset a password is that somebody else may have it.
 A reset that leaves their token alive for 24 hours is not a reset.
 
-**Verification: 236 backend unit tests + 450 live assertions, all passing.**
+**Verification: 257 backend unit tests + 450 live assertions, all passing.**
 
 | # | Was | Now |
 |---|-----|-----|
@@ -92,7 +123,7 @@ and must not blame the product for its own environment.
 
 | Suite | Result |
 |---|---|
-| `manage.py test` | **236 pass** (was 219) — 17 new for revocation |
+| `manage.py test` | **257 pass** (was 236) — 21 new for ritual admin CRUD + item editing |
 | `verify_day2.py` | 68/68 — no regression |
 | `verify_day3.py` | 55/55 — no regression |
 | `verify_day3b.py` | 41/41 — no regression |

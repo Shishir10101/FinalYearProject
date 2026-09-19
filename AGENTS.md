@@ -237,7 +237,7 @@ venv/Scripts/python.exe manage.py runserver 8000      # :8000
 venv/Scripts/python.exe manage.py makemigrations
 venv/Scripts/python.exe manage.py migrate
 venv/Scripts/python.exe manage.py seed_data           # reseeds admin/…/testuser
-venv/Scripts/python.exe manage.py test                # 236 tests
+venv/Scripts/python.exe manage.py test                # 257 tests
 venv/Scripts/python.exe manage.py refresh_festivals   # rebuild the festival calendar
 venv/Scripts/python.exe manage.py seed_pujas          # derive rituals from kit/product data
 venv/Scripts/python.exe manage.py generate_synthetic_sales   # SYNTHETIC forecast data
@@ -655,7 +655,7 @@ Minimum loop for any change:
 Keep it in `docs/CURRENT-STATE.md`.
 
 Django tests live in `backend/<app>/tests.py` plus `backend/core/tests_roles.py`.
-There are now **236**, covering the recommender (30), the forecaster (33), the
+There are now **257**, covering the recommender (30), the forecaster (33), the
 role/scoping system (47), order status history (23), password reset (25),
 catalogue validation (17), the Puja entry point (24), add-puja-to-cart (10) and
 token revocation (17). Live suites cover the rest:
@@ -761,7 +761,7 @@ Full detail in `docs/CURRENT-STATE.md` §Priority. Summary:
 § "What is NOT built"). Before adding anything, re-run the full verification sweep:
 
 ```
-./venv/Scripts/python.exe manage.py test          # 236 unit tests
+./venv/Scripts/python.exe manage.py test          # 257 unit tests
 ./venv/Scripts/python.exe verify_day2.py          # 68 assertions
 ./venv/Scripts/python.exe verify_day3.py          # 55 assertions
 ./venv/Scripts/python.exe verify_day3b.py         # 41 assertions
