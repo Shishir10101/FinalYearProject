@@ -26,6 +26,12 @@ MARKERS = [
     'created by verify_day3b.py',
     'verify_day3.py',
     'verify_day2.py',
+    # The storefront browser check places one real order through the checkout form
+    # and writes this marker into its notes, so it is swept up with the rest.
+    'browser_check.mjs',
+    # verify_day11.py buys a product so it can prove the "verified purchase" badge on
+    # a review. The order is a fixture, not a demo order.
+    'verify_day11.py',
 ]
 
 # verify_day3c.py also checks out into a scratch delivery area. That path has no

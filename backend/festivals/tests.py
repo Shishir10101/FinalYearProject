@@ -25,7 +25,9 @@ from core.permissions import ROLE_ADMIN, ROLE_CUSTOMER, ROLE_VENDOR
 from django.core.management import call_command
 
 from products.models import Category, Product
-from .models import FestivalKit, KitItem, Puja, PujaItem, UpcomingFestival
+from .models import (
+    FESTIVAL_CHOICES, FestivalKit, KitItem, Puja, PujaItem, UpcomingFestival,
+)
 from .recommender import (
     WEIGHTS,
     RECOMMENDATION_WINDOW_DAYS,
@@ -947,3 +949,147 @@ class AdminKitItemPaginationTests(TestCase):
         self.assertTrue(row['product_name'])
         self.assertIn('product_price', row)
         self.assertIn('product_unit', row)
+
+
+class FestivalChoicesEndpointTests(TestCase):
+    """`GET /api/festivals/choices/` — the enum the dashboard forms need.
+
+    Both authoring forms (kits and rituals) draw their type dropdown from here.
+    Deriving it from the kits that happen to exist would be the old hardcoded
+    ``CITY_CHOICES`` trap in reverse: a type with no kit yet would be missing
+    from the dropdown, so the first kit of a new type could never be created.
+    """
+
+    def test_it_is_public(self):
+        self.assertEqual(APIClient().get('/api/festivals/choices/').status_code, 200)
+
+    def test_it_returns_the_whole_enum(self):
+        body = APIClient().get('/api/festivals/choices/').json()
+        self.assertIsInstance(body, list)
+        self.assertEqual(len(body), len(FESTIVAL_CHOICES))
+        self.assertEqual(
+            [row['value'] for row in body], [value for value, _ in FESTIVAL_CHOICES]
+        )
+
+    def test_labels_match_the_model_enum(self):
+        body = APIClient().get('/api/festivals/choices/').json()
+        self.assertEqual(
+            [row['label'] for row in body], [label for _, label in FESTIVAL_CHOICES]
+        )
+
+    def test_it_includes_types_that_have_no_kit(self):
+        """The whole point of publishing the enum rather than deriving it."""
+        FestivalKit.objects.create(
+            name='Only Kit', festival_type='dashain', description='x',
+        )
+        values = [row['value'] for row in APIClient().get('/api/festivals/choices/').json()]
+        self.assertIn('nag_panchami', values)
+        self.assertIn('other', values)
+
+
+class AdminKitSerializerTests(TestCase):
+    """The kit write payload the dashboard table renders.
+
+    `FestivalKitAdminSerializer` used to be ``fields = '__all__'``. That leaked
+    `image` — a file upload a JSON form cannot set — and did not reliably carry a
+    declared `item_count`, which the kits table shows. Both are pinned here.
+    """
+
+    def setUp(self):
+        self.category = Category.objects.create(name='Kit Serializer Cat')
+        self.manager = User.objects.create_user('mgr3', password='pw12345678')
+        UserProfile.objects.create(user=self.manager, role=ROLE_ADMIN)
+        self.kit = FestivalKit.objects.create(
+            name='Serializer Kit', festival_type='tihar', description='x',
+        )
+        product = Product.objects.create(
+            name='Serializer Product', description='x', price=Decimal('25'),
+            stock=5, category=self.category,
+        )
+        KitItem.objects.create(kit=self.kit, product=product, quantity=2)
+
+    def api(self):
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.manager).access_token}'
+        )
+        return client
+
+    def test_item_count_is_reported(self):
+        row = self.api().get('/api/festivals/admin/kits/').json()[0]
+        self.assertEqual(row['item_count'], 1)
+
+    def test_image_is_not_exposed(self):
+        """A JSON form cannot set a file field, so it must not be offered."""
+        row = self.api().get('/api/festivals/admin/kits/').json()[0]
+        self.assertNotIn('image', row)
+
+    def test_create_accepts_the_form_payload(self):
+        response = self.api().post('/api/festivals/admin/kits/', {
+            'name': 'Created By Form',
+            'festival_type': 'pasni',
+            'description': 'x',
+            'discount_percent': 10,
+            'puja': None,
+            'is_active': True,
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(response.json()['item_count'], 0)
+
+    def test_kit_can_be_linked_to_a_ritual(self):
+        """The FK lives on the kit, so this is where the link is made."""
+        puja = Puja.objects.create(name='Linkable Ritual', slug='linkable-ritual')
+        response = self.api().patch(
+            f'/api/festivals/admin/kits/{self.kit.id}/', {'puja': puja.id}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.kit.refresh_from_db()
+        self.assertEqual(self.kit.puja_id, puja.id)
+
+
+class AdminPujaKitReportingTests(TestCase):
+    """`kit_names` tells the rituals table what already serves a ritual.
+
+    A ritual cannot be *given* a kit from its own endpoint — the link is a FK on
+    the kit and one ritual may have several bundles — so the page reports the
+    existing links instead of offering a picker that would have to choose one
+    arbitrarily.
+    """
+
+    def setUp(self):
+        self.manager = User.objects.create_user('mgr4', password='pw12345678')
+        UserProfile.objects.create(user=self.manager, role=ROLE_ADMIN)
+        self.puja = Puja.objects.create(name='Reported Ritual', slug='reported-ritual')
+
+    def api(self):
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(self.manager).access_token}'
+        )
+        return client
+
+    def test_names_are_empty_when_no_kit_exists(self):
+        row = self.api().get('/api/festivals/admin/pujas/').json()[0]
+        self.assertEqual(row['kit_names'], [])
+        self.assertEqual(row['kit_count'], 0)
+
+    def test_names_list_every_linked_kit(self):
+        FestivalKit.objects.create(
+            name='First Bundle', festival_type='dashain', description='x', puja=self.puja,
+        )
+        FestivalKit.objects.create(
+            name='Second Bundle', festival_type='dashain', description='x', puja=self.puja,
+        )
+        row = self.api().get('/api/festivals/admin/pujas/').json()[0]
+        self.assertEqual(sorted(row['kit_names']), ['First Bundle', 'Second Bundle'])
+        self.assertEqual(row['kit_count'], 2)
+
+    def test_kit_names_is_read_only(self):
+        """It is a report of a reverse relation, not a writable field."""
+        response = self.api().patch(
+            f'/api/festivals/admin/pujas/{self.puja.id}/',
+            {'kit_names': ['Made Up']}, format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        row = self.api().get('/api/festivals/admin/pujas/').json()[0]
+        self.assertEqual(row['kit_names'], [])

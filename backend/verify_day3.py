@@ -291,13 +291,23 @@ def main():
     check('customer profile loads', st == 200, f'got {st}')
 
     st, _ = request(
-        'PATCH', '/auth/profile/', {'role': 'super_admin'}, token=cust_tok
+        'PUT', '/auth/profile/',
+        {'first_name': 'Escalation Attempt', 'role': 'super_admin'}, token=cust_tok
     )
+    # `PUT` is the verb `ProfileView` implements; a `PATCH` returns 405 and would
+    # make the check below pass without ever reaching the guarded code. The write
+    # itself must succeed, or "the role did not change" proves nothing.
+    check('profile write is accepted', st == 200, f'got {st}')
     st2, after = request('GET', '/auth/profile/', token=cust_tok)
     p_after = after.get('profile') or {}
+    check('the write really landed', after.get('first_name') == 'Escalation Attempt',
+          f"first_name={after.get('first_name')}")
     check('customer role did not change',
           p_after.get('role') == 'customer', f"role={p_after.get('role')}")
     check('customer is not is_admin_user', p_after.get('is_admin_user') is not True)
+
+    # Put the name back so the seeded demo account is left as it was.
+    request('PUT', '/auth/profile/', {'first_name': 'Ram'}, token=cust_tok)
 
     st, _ = request(
         'POST', '/products/admin/products/',

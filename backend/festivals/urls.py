@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     FestivalKitListView, FestivalKitDetailView,
     UpcomingFestivalsView, RecommendationsView,
+    FestivalChoicesView,
     PujaListView, PujaDetailView,
     AdminFestivalKitListCreateView, AdminFestivalKitDetailView,
     AdminKitItemListCreateView, AdminKitItemDetailView,
@@ -15,6 +16,10 @@ urlpatterns = [
     path('kits/<int:pk>/', FestivalKitDetailView.as_view(), name='kit-detail'),
     path('upcoming/', UpcomingFestivalsView.as_view(), name='upcoming-festivals'),
     path('recommendations/', RecommendationsView.as_view(), name='recommendations'),
+    # The enum itself, for the dashboard's authoring forms. Literal, and placed
+    # before the `pujas/<slug>/` pattern only for readability — it cannot collide
+    # with anything, since every other pattern here is either a literal or nested.
+    path('choices/', FestivalChoicesView.as_view(), name='festival-choices'),
     # Rituals. The literal `pujas/` must precede nothing else here — the slug
     # pattern is nested under the `pujas/` prefix, so it cannot shadow any other
     # route in this module.

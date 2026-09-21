@@ -22,6 +22,12 @@ from django.core import mail
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from core.permissions import (
+    ROLE_ADMIN, ROLE_CUSTOMER, ROLE_SUPER_ADMIN, ROLE_VENDOR,
+)
+from products.models import Vendor
 
 from .models import UserProfile
 from .password_reset import build_reset_url, encode_uid, make_token
@@ -506,3 +512,213 @@ class TokenRevocationTests(TestCase):
             'new_password': 'AnotherPass789', 'new_password2': 'AnotherPass789',
         }, format='json')
         self.assertIn('sessions', confirm.json()['message'].lower())
+
+
+class AdminUserListTests(TestCase):
+    """`GET /api/auth/admin/users/` — the vendor form's account picker.
+
+    Creating a `Vendor` requires choosing the `User` it belongs to, and there was no
+    endpoint to choose from, so the shop-owning half of the role hierarchy could not
+    be administered from the dashboard.
+
+    The checks that matter are the negative ones. This endpoint lists **people**,
+    which is the one place in the admin API where reading is itself a privilege — a
+    vendor must not be able to enumerate the user table. And `role` must stay
+    read-only: a writable role here would let any manager PATCH a customer straight
+    to super admin.
+    """
+
+    URL = '/api/auth/admin/users/'
+
+    def setUp(self):
+        self.manager = self._user('mgr_user', ROLE_ADMIN)
+        self.superuser = self._user('super_user', ROLE_SUPER_ADMIN)
+        self.vendor = self._user('vendor_user', ROLE_VENDOR)
+        self.customer = self._user('plain_customer', ROLE_CUSTOMER)
+
+        self.shop = Vendor.objects.create(user=self.vendor, shop_name='Existing Bhandar')
+
+    def _user(self, username, role):
+        user = User.objects.create_user(username, email=f'{username}@example.com',
+                                        password='pw12345678')
+        UserProfile.objects.create(user=user, role=role)
+        return user
+
+    def api(self, user):
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(user).access_token}'
+        )
+        return client
+
+    # --- authorization ---------------------------------------------------
+
+    def test_manager_can_list(self):
+        response = self.api(self.manager).get(self.URL)
+        self.assertEqual(response.status_code, 200)
+        self.assertIsInstance(response.json(), list, 'must be a bare list, not a page')
+
+    def test_super_admin_can_list(self):
+        self.assertEqual(self.api(self.superuser).get(self.URL).status_code, 200)
+
+    def test_vendor_is_refused(self):
+        """A vendor may read the catalogue. It may not read the user table."""
+        self.assertEqual(self.api(self.vendor).get(self.URL).status_code, 403)
+
+    def test_customer_is_refused(self):
+        self.assertEqual(self.api(self.customer).get(self.URL).status_code, 403)
+
+    def test_anonymous_is_refused(self):
+        self.assertEqual(APIClient().get(self.URL).status_code, 401)
+
+    # --- payload ---------------------------------------------------------
+
+    def test_payload_carries_what_the_picker_needs(self):
+        rows = self.api(self.manager).get(self.URL).json()
+        row = next(r for r in rows if r['username'] == 'plain_customer')
+        self.assertEqual(
+            set(row), {'id', 'username', 'email', 'first_name', 'last_name',
+                       'is_active', 'role', 'has_vendor'}
+        )
+        self.assertEqual(row['role'], ROLE_CUSTOMER)
+        self.assertFalse(row['has_vendor'])
+
+    def test_role_is_resolved_not_raw(self):
+        """`vendor` must not read as `admin` just because the account is staff."""
+        rows = self.api(self.manager).get(self.URL).json()
+        row = next(r for r in rows if r['username'] == 'vendor_user')
+        self.assertEqual(row['role'], ROLE_VENDOR)
+
+    def test_no_password_or_privilege_fields_leak(self):
+        """A hash has no business in a JSON response, even read-only."""
+        row = self.api(self.manager).get(self.URL).json()[0]
+        for forbidden in ['password', 'is_superuser', 'is_staff', 'permissions',
+                          'last_login', 'date_joined']:
+            self.assertNotIn(forbidden, row)
+
+    def test_has_vendor_marks_existing_shops(self):
+        rows = self.api(self.manager).get(self.URL).json()
+        self.assertTrue(next(r for r in rows if r['username'] == 'vendor_user')['has_vendor'])
+        self.assertFalse(next(r for r in rows if r['username'] == 'plain_customer')['has_vendor'])
+
+    # --- filters ---------------------------------------------------------
+
+    def test_unassigned_filter_excludes_existing_shops(self):
+        """A user can own at most one shop, so offering a taken account would 400."""
+        rows = self.api(self.manager).get(f'{self.URL}?unassigned=1').json()
+        usernames = {r['username'] for r in rows}
+        self.assertNotIn('vendor_user', usernames)
+        self.assertIn('plain_customer', usernames)
+
+    def test_search_matches_username_and_email(self):
+        by_name = self.api(self.manager).get(f'{self.URL}?search=plain_cust').json()
+        self.assertEqual([r['username'] for r in by_name], ['plain_customer'])
+
+        by_email = self.api(self.manager).get(f'{self.URL}?search=mgr_user@').json()
+        self.assertEqual([r['username'] for r in by_email], ['mgr_user'])
+
+    def test_search_with_no_match_is_an_empty_list(self):
+        response = self.api(self.manager).get(f'{self.URL}?search=nobodyhere')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_list_is_not_paginated(self):
+        """A picker that silently shows one page of candidates is a broken picker."""
+        for i in range(14):
+            self._user(f'bulk_user_{i}', ROLE_CUSTOMER)
+        body = self.api(self.manager).get(self.URL).json()
+        self.assertIsInstance(body, list)
+        self.assertGreater(len(body), 12)
+
+    # --- role cannot be written through this endpoint --------------------
+
+    def test_role_is_read_only(self):
+        """A manager must not be able to escalate anyone via this surface."""
+        response = self.api(self.manager).get(self.URL)
+        self.assertEqual(response.status_code, 200)
+        # The endpoint is a ListAPIView: there is no write verb at all.
+        self.assertEqual(self.api(self.manager).post(self.URL, {}, format='json').status_code, 405)
+        self.assertEqual(self.api(self.manager).patch(self.URL, {}, format='json').status_code, 405)
+
+
+class ResolvedRoleInProfileTests(TestCase):
+    """`GET /api/auth/profile/` must report the role the server actually enforces.
+
+    It used to publish the raw `UserProfile.role` column. Those differ for legacy
+    rows, so the dashboard and the API could disagree about the same user: the
+    client was told "customer" while every request was authorised as "admin".
+
+    The user-visible consequence of the old gate was worse than an inconsistency.
+    `AdminContext` decided dashboard access from `is_admin_user`, a legacy boolean
+    that `UserProfile.save()` only sets for super_admin/admin — so **a vendor could
+    not open the dashboard at all**. The VENDOR role was enforced correctly on every
+    endpoint and had no way to reach a single screen, which made it undemonstrable.
+    """
+
+    def _user(self, username, role=None, is_staff=False, is_superuser=False):
+        user = User.objects.create_user(username, password='pw12345678',
+                                        is_staff=is_staff, is_superuser=is_superuser)
+        UserProfile.objects.create(user=user, **({'role': role} if role else {}))
+        return user
+
+    def profile(self, user):
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(user).access_token}'
+        )
+        response = client.get('/api/auth/profile/')
+        self.assertEqual(response.status_code, 200)
+        return response.json()['profile']
+
+    def test_vendor_reports_the_vendor_role(self):
+        profile = self.profile(self._user('p_vendor', role=ROLE_VENDOR))
+        self.assertEqual(profile['role'], ROLE_VENDOR)
+
+    def test_vendor_is_not_flagged_as_a_manager(self):
+        """The legacy boolean is false for vendors — which is why it was the wrong gate."""
+        profile = self.profile(self._user('p_vendor2', role=ROLE_VENDOR))
+        self.assertFalse(profile['is_admin_user'])
+
+    def test_legacy_staff_user_resolves_to_admin(self):
+        """The regression: the raw column says `customer`, the server says `admin`.
+
+        A staff account created before roles existed has the model default in its
+        profile. `get_role` falls back to `is_staff`; publishing the raw column
+        contradicted that.
+        """
+        profile = self.profile(self._user('p_legacy', is_staff=True))
+        self.assertEqual(profile['role'], ROLE_ADMIN)
+
+    def test_superuser_beats_a_stale_profile_row(self):
+        """An explicit Django superuser must never be demoted by profile data."""
+        profile = self.profile(self._user('p_super', role=ROLE_CUSTOMER, is_superuser=True))
+        self.assertEqual(profile['role'], ROLE_SUPER_ADMIN)
+
+    def test_plain_customer_stays_a_customer(self):
+        profile = self.profile(self._user('p_customer'))
+        self.assertEqual(profile['role'], ROLE_CUSTOMER)
+
+    def test_role_is_still_read_only(self):
+        """A customer must not be able to PUT themselves into a super admin.
+
+        `ProfileView` accepts **PUT**, not PATCH. That matters: two existing
+        "role is read-only" checks were written against the wrong verb and the wrong
+        path, so they passed against a 405 and a 404 and proved nothing. This one
+        exercises the endpoint that actually writes a profile.
+        """
+        user = self._user('p_escalate')
+        client = APIClient()
+        client.credentials(
+            HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(user).access_token}'
+        )
+        response = client.put('/api/auth/profile/', {
+            'first_name': 'Renamed', 'role': ROLE_SUPER_ADMIN,
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        user.profile.refresh_from_db()
+        self.assertEqual(user.profile.role, ROLE_CUSTOMER)
+        # The write did happen — the name changed — so this is not a 200 that did
+        # nothing, which would make the assertion above vacuous.
+        user.refresh_from_db()
+        self.assertEqual(user.first_name, 'Renamed')
+        self.assertEqual(response.json()['profile']['role'], ROLE_CUSTOMER)

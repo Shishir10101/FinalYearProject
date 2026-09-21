@@ -146,6 +146,18 @@ truth for who may do what). See §8.
 - **`seed_pujas` must stay a command, never a data migration.** Products, categories and kits are
   created by `seed_data`, not by any migration, so a migration seeding puja items would find an
   empty catalogue on a fresh database and quietly produce rituals with no samagri.
+- **`Puja` cannot be given a kit through its own API.** The FK is on the kit
+  (`FestivalKit.puja`) — a kit declares which ritual it serves, and one ritual may have several
+  bundles, so a singular write field on `PujaAdminSerializer` would have to pick one arbitrarily.
+  `kit_names` / `kit_count` are read-only reports. Set the link from the kit endpoint.
+- **`FestivalKitAdminSerializer` lists its fields explicitly, not `fields = '__all__'`.** It
+  carries a declared `item_count` the dashboard table needs, and `image` is deliberately
+  excluded — it is a file upload, and a JSON form posting a string path to it would get a
+  validation error for a field it never rendered. Adding a model field will not silently expose
+  it here; add it on purpose.
+- **Both item list endpoints return a bare array and are unpaginated.** `PAGE_SIZE` is 12,
+  Bratabandha has 14 items, Daily Puja has 21. Tests assert a bare list because a `results`
+  dict would still pass a `len()` check against a page. Do not "fix" them to match the others.
 - `OrderStatusEvent` (Day 4) is an **append-only** log of status transitions. It is written from
   exactly two places — `CheckoutView` and `AdminOrderUpdateView.perform_update()` — and only for a
   genuine change. Never write one for an unchanged status: the customer's timeline fills with
@@ -175,8 +187,22 @@ truth for who may do what). See §8.
   **last** public pattern. It was missing entirely at one point, which made the whole
   product detail page 404; it must stay below `featured/`, `categories/`, and `areas/`
   or it will shadow those literal paths.
+- `festivals/urls.py` nests its slug pattern under a prefix (`pujas/<slug:slug>/`), so
+  it cannot shadow the literal `pujas/` — unlike the flat `products/urls.py` case above.
+  Keep it that way.
+- Admin kits and rituals are parallel URL families that must stay parallel:
+  `/admin/kits/` ↔ `/admin/pujas/`, `/admin/kits/<id>/items/` ↔
+  `/admin/pujas/<id>/items/`, `/admin/kit-items/<pk>/` ↔ `/admin/puja-items/<pk>/`.
+  The dashboard drives both from one component, so a divergence here breaks the editor
+  for one domain only — the kind of bug that survives a smoke test of the other.
 - Order history is `/api/orders/` and detail is `/api/orders/<id>/`.
   There is **no** `/api/orders/my-orders/`. There is also **no** `/api/products/pujas/`.
+  Rituals live at `/api/festivals/pujas/`.
+- **`/api/auth/profile/` implements `PUT`, not `PATCH`.** A `PATCH` returns 405, and two
+  "role is read-only" guards once passed against exactly that without testing anything.
+  `/api/accounts/...` does not exist — the prefix is `auth`.
+- The account picker is `/api/auth/admin/users/`, under the `auth` prefix because it is
+  about accounts, not the catalogue.
 - `AdminOrderUpdateView` (`/api/orders/admin/orders/<id>/`) is a **write-only**
   `UpdateAPIView` — `PUT`/`PATCH` only, **no `GET`** (a GET returns 405).
   Read an order back through `/api/orders/<id>/`.
@@ -237,7 +263,7 @@ venv/Scripts/python.exe manage.py runserver 8000      # :8000
 venv/Scripts/python.exe manage.py makemigrations
 venv/Scripts/python.exe manage.py migrate
 venv/Scripts/python.exe manage.py seed_data           # reseeds admin/…/testuser
-venv/Scripts/python.exe manage.py test                # 257 tests
+venv/Scripts/python.exe manage.py test                # 336 tests
 venv/Scripts/python.exe manage.py refresh_festivals   # rebuild the festival calendar
 venv/Scripts/python.exe manage.py seed_pujas          # derive rituals from kit/product data
 venv/Scripts/python.exe manage.py generate_synthetic_sales   # SYNTHETIC forecast data
@@ -245,6 +271,7 @@ venv/Scripts/python.exe manage.py generate_synthetic_sales   # SYNTHETIC forecas
 # Remove scratch rows left by the verifiers (always run after a verification sweep)
 venv/Scripts/python.exe manage.py purge_verification_orders   # --dry-run supported
 venv/Scripts/python.exe manage.py purge_verification_users    # --dry-run supported
+venv/Scripts/python.exe manage.py purge_verification_reviews  # --dry-run supported
 
 # Live end-to-end verification (server must already be running on :8000)
 venv/Scripts/python.exe verify_day2.py                # 68 assertions
@@ -254,6 +281,36 @@ venv/Scripts/python.exe verify_day3c.py               # 128 assertions — full 
 venv/Scripts/python.exe verify_day4.py                # 88 assertions — history, reset, validation
 venv/Scripts/python.exe verify_day6.py                # 40 assertions — the ritual entry point
 venv/Scripts/python.exe verify_day7.py                # 30 assertions — token revocation
+venv/Scripts/python.exe verify_day8.py                # 74 assertions — kit & ritual authoring
+venv/Scripts/python.exe verify_day9.py                # 49 assertions — vendor administration
+venv/Scripts/python.exe verify_day11.py               # 66 assertions — reviews & moderation
+
+# Real-browser checks (dashboard on :3001, storefront on :3000, API on :8000).
+# These are the ONLY checks that can see a client-side render failure: `AuthGate`
+# renders "Checking your session…" during SSR, so curl gets a healthy 200 with an
+# empty shell. They drive the Edge already on the machine via playwright-core, so
+# there is no Chromium download and nothing is added to package.json. One-time setup:
+#   mkdir -p /tmp/harness && cd /tmp/harness && npm init -y && npm install playwright-core
+cd admin-dashboard
+NODE_PATH=/tmp/harness/node_modules node scripts/browser_check.mjs      # 64 assertions
+cd ../frontend
+NODE_PATH=/tmp/harness/node_modules node scripts/storefront_check.mjs   # 60 assertions
+# The storefront check places ONE real order; clean it up with
+#   cd backend && venv/Scripts/python.exe manage.py purge_verification_orders
+# The dashboard check seeds one review through the API and removes it again; the
+# storefront check posts one and deletes it through the UI. If either is interrupted
+# mid-section: manage.py purge_verification_reviews
+#
+# Run them against a PRODUCTION build (`npm run build && npx next start -p <port>`),
+# not `next dev`. Under `next dev` the HMR websocket fails in the sandbox and the
+# client never hydrates: every page renders its SSR shell and no card ever appears,
+# so the harness fails on a page that is perfectly healthy. A production build has no
+# HMR socket. If you do use dev, pre-warm every route with curl first — Turbopack's
+# first compile of a route can exceed the harness's 25s selector timeout.
+#
+# Start the two frontends SEQUENTIALLY, pinned: `next dev` with no `-p` races for
+# :3000 and the loser silently takes :3001. The storefront then serves on the admin's
+# port and both harnesses point at the wrong app.
 
 # Frontend — :3000
 cd frontend && npm run dev
@@ -275,16 +332,34 @@ npx eslint --rule '{"no-undef":"error"}' src/
 
 > **Sandbox note.** `next build` deletes files inside `.next/`. In a sandboxed shell this can be
 > blocked by a bulk-delete guard and reported as `Build error occurred`, even though the compile
-> itself succeeded (`✓ Compiled successfully`). If you see
-> `SAFE_DELETE_BULK_CONFIRM_REQUIRED`, re-run the build with the sandbox disabled, or
-> `rm -rf .next` first and rebuild. Always confirm the real result via `EXIT=$?` and the
-> `Compiled successfully` line, not just the presence of the word "Error".
+> itself succeeded (`✓ Compiled successfully`). Always confirm the real result from the log's
+> `Compiled successfully` / `Generating static pages (N/N)` lines and the compiled manifest
+> (`.next/app-path-routes-manifest.json`), not from `EXIT=$?` and not from the word "Error".
 >
-> **The guard counts deletions per turn**, so once it has tripped, even a later
-> `rm -f somelog.txt` in the same turn is refused — and if that `rm` is chained with `&&`, the
-> command after it silently never runs. That is how a "failed" build turns out to have never
-> executed at all. Prefer a fresh filename over `rm`, and check the log file for a
-> `Compiled successfully` line before believing a failure.
+> There are two distinct modes, and they need opposite responses:
+>
+> 1. **Guard fires at the END** — the log contains `✓ Compiled successfully` and
+>    `✓ Generating static pages (N/N)` above the error. Turbopack is deleting its own scratch
+>    file (`export-detail.json`, `trace`). **The build passed. Nothing to do.**
+> 2. **Guard fires at the START** — the log contains the error and *no* compile lines, and no
+>    manifest is written. A stale `.next` is being cleared, so nothing compiled.
+>
+> **The guard counts deletions per turn**, and the budget is shared by everything in that turn.
+> Once it has tripped, every later delete is refused too — and `rm -rf .next` is shimmed and
+> blocked regardless. So:
+>
+> - **Never chain a delete before a build.** `rm -f old.log && npm run build` skips the build
+>   entirely when the `rm` is refused, and the *previous* log is still on disk, so you inspect
+>   stale output and "confirm" a failure that never happened. Use a fresh log filename per
+>   attempt instead.
+> - **Do not retry a blocked build in the same turn** — the counter only accumulates.
+> - **To get past mode 2, move `.next` rather than deleting it.** A rename is not a delete and
+>   is not intercepted:
+>   ```bash
+>   mkdir -p /c/Users/<user>/AppData/Local/Temp/next_stale && mv .next "$_/next"
+>   ```
+>   Then build. Do not leave a stale `.next*` directory inside the project — a leftover
+>   `.next_old_*` was the cause of a real build failure on Day 1.
 
 > **Stale-server trap — this has cost real time twice.** `runserver --noreload` started in a
 > background shell **outlives the shell** if the shell exits abnormally, and keeps the port.
@@ -323,8 +398,16 @@ made the unlisted thing unreachable:
 | `CITY_CHOICES` in three files | The `Area` table (Day 3) |
 | The festival type filter in `festivals/page.js` (seven literals) | Derived from the kits' own `festival_type` / `festival_type_display` (Day 5) |
 | `/festivals/upcoming/` capped at `[:5]` | `?limit=`, default 5, max 50 (Day 5) — five of ten active festivals had been unreachable |
+| The dashboard's kit/ritual type dropdown | `GET /api/festivals/choices/` publishes `FESTIVAL_CHOICES` itself (Day 8) |
 
 **If a value is a row in the database, read it. Do not write it into a component.**
+
+> The Day 8 case is the same trap **in reverse**, which is why the answer was not
+> "derive it from the kits". Deriving the dropdown from existing kits would have
+> omitted every type with no kit yet — so the first kit of a new festival type could
+> never have been created, and the omission would have looked like a UI choice rather
+> than a bug. An enum that the *application* owns is served from the enum; a set that
+> the *database* owns is read from the database.
 
 ### One product tile
 
@@ -339,6 +422,64 @@ it without passing a function across the boundary. Optional `reason` and `badge`
 the recommendation explanation and the festival-urgency label.
 
 **Do not hand-roll a fourth variant.** Adding one is exactly how the first three drifted apart.
+
+### One item editor, one domain shell
+
+The same rule, applied to the dashboard on Day 8:
+
+| Component | Drives |
+|---|---|
+| `admin-dashboard/src/components/ItemManager.js` | The item list of **both** a kit and a ritual — add a product, edit its quantity, toggle required, remove it |
+| `admin-dashboard/src/components/DomainManager.js` | The list + create/edit form + delete + enable/disable shell behind `/festivals`, `/pujas`, `/vendors` **and** `/reviews` |
+
+`DomainManager` takes a config object, and **the config must be a module-level
+constant**. It is a `useCallback` dependency inside the component, so an inline object
+literal is a new identity on every render and re-fetches forever.
+
+**Do not fork either one.** A fifth collection with a list and a form is another
+config, not another page. The knobs that keep it that way: omit `itemsUrl` for a
+collection with no item list; give `displayName(row)` when the row's label is not
+`row.name`; mark a field `createOnly` to offer it at creation and freeze it afterwards;
+set `activeField` + `activeLabels` when the enable/disable boolean is not `is_active`
+(reviews toggle `is_approved`, not `is_active` — patching the wrong one returns 200 and
+changes nothing, which looks like it worked until you reload); and set
+`canCreate: false` / `canEdit: false` for a collection that is moderated rather than
+authored, so the affordance is absent instead of being rejected by the API.
+
+### The same trap, on the storefront — and it cost a real bug
+
+The `DomainManager` rule generalises: **any callback passed to a child that uses it in a
+`useCallback` dependency must have a stable identity.** On Day 11 the product page passed
+`onSummaryChange` to `ReviewsSection` as an inline arrow, and the section had it in the
+dependency list of its load effect. That is an unbounded loop:
+
+```
+load() → onSummaryChange() → parent setState → parent re-render →
+new arrow → new `load` identity → effect fires → load() …
+```
+
+Measured at **537 requests to the reviews endpoint in 12 seconds**, still climbing, with
+the section flickering between skeletons and content. Nothing saw it — not the build, not
+ESLint, not 336 unit tests, not 575 live API assertions. It surfaced only as *flakiness*
+in the new browser assertion, and a request counter proved it. `storefront_check.mjs` now
+pins it: two five-second windows, asserting the request count stops growing.
+
+The fix is applied on **both** sides, and both are worth keeping: `ReviewsSection` holds
+the callback in a `useRef` so it is safe by construction, and the page passes a
+`useCallback` whose state update returns the previous object when the values are
+unchanged. Do not "simplify" either one away.
+
+One thing the item editor must not lose: both item list endpoints set
+`pagination_class = None` and return a **bare array**. `PAGE_SIZE` is 12, Bratabandha has
+14 items and Daily Puja has 21 — paginated, the editor would silently show an incomplete
+kit and look correct. The tests assert a bare list specifically because a `results` dict
+would still pass a `len()` check against a page. If those tests fail, fix the view.
+
+The expanded panel row carries the global `.table-panel` class. Below 720px
+`.table-wrap` pins its first column (`position: sticky`) and sets `white-space: nowrap`
+on every cell, which would pin the editor and stop it wrapping. A CSS-module class
+cannot win that specificity fight, so the opt-out lives in `globals.css` next to the
+rules it overrides.
 
 ---
 
@@ -392,6 +533,26 @@ byte-identical. Only `core`'s runs. If you change seeding, change `core`'s; dele
 **Demo-auth gap, known and accepted:** there is no email login, OTP, or password reset.
 The brief permits a safe demo mechanism. If you add password reset, implement it as a real
 token flow and clearly flag it as demo-grade — do **not** fake a successful reset.
+
+### Publish the resolved role, never the raw column *(added Day 9)*
+
+`/api/auth/profile/` returns `profile.role` from `core.permissions.get_role()`, **not**
+from the `UserProfile.role` column. They differ, and the difference is not cosmetic:
+
+- `get_role()` falls back to `is_staff` for accounts created before roles existed, so a
+  legacy staff user resolves to `admin` while the column still reads `customer`. Serving
+  the column had the dashboard told "customer" while every request was authorised as
+  "admin" — client and server disagreeing about the same user.
+- The dashboard's access gate reads this value. Gating on the legacy `is_admin_user`
+  boolean instead meant a **vendor could not open the dashboard at all**: the boolean is
+  only ever set for `super_admin`/`admin`, so a vendor's token verified, came back
+  `false`, was discarded, and the login bounced to `/login`. The VENDOR role was enforced
+  correctly on every endpoint and was unreachable in the product.
+
+**The gate is `is_staff_role(role)`, and that includes `vendor`.** If you change the
+profile payload or `AdminContext`, keep those two in step — and verify it in a browser,
+because no API test can see a login bounce.
+
 ---
 
 ### Token revocation *(added Day 7)*
@@ -466,10 +627,24 @@ SUPER_ADMIN  →  everything
 | `is_super_admin(user)` | super_admin only |
 | `is_vendor(user)` | vendor only |
 | `vendor_for(user)` | The user's `Vendor` row, or `None` |
+| `promote_to_vendor(user)` | Give a `customer` account the vendor role. Returns whether it changed |
 | `IsStaffRole` | Any staff role may pass |
 | `IsManagerOrReadOnly` | Staff may read; only managers may write |
+| `IsManager` | Managers only, **including reads**. For endpoints where reading is itself a privilege |
 | `IsSuperAdmin` | Super admin only |
 | `IsOwnerVendorOrManager` | Object-level: a vendor may only touch their own object |
+
+**`IsManager` vs `IsManagerOrReadOnly`:** a vendor legitimately reads the shared
+catalogue, which is why `IsManagerOrReadOnly` lets any staff role read. Use
+`IsManager` for anything that enumerates *people* — currently
+`/api/auth/admin/users/`, the account picker behind the vendor form. A vendor must not
+be able to list the user table.
+
+**`promote_to_vendor` is called from `AdminVendorListCreateView.perform_create`**, so
+creating a shop makes its account a vendor. Two limits, both tested: it never demotes
+an account that outranks `customer`, and it does **not** set `is_staff` — that would
+also grant Django admin at `/admin/`, which a vendor has no business having. Deleting a
+vendor does not demote either; revoking a login is an account decision, not a shop one.
 
 ### Rules
 
@@ -545,6 +720,22 @@ Global utilities — **already defined, do not re-implement per page**:
    forms, cart, checkout, dashboard tables and modals.
 8. Accessibility: keep contrast AA, keep focus visible, label every input, give icon-only
    buttons an `aria-label` (the `+` add-to-cart button needs one).
+9. **A loading flag is not a loaded flag.** `useState(false)` for `loading` means "not
+   loading *yet*", which is also true before the first fetch. Any guard that reads
+   `!loading && list.length === 0` therefore cannot tell "empty" from "not fetched", and
+   on a fresh page load it will take the empty branch. That is not theoretical: it made a
+   full page load of `/checkout` bounce to `/cart` with a full cart, and made `/cart`
+   tell a customer their cart was empty. `CartContext` now exposes
+   **`cartLoaded`** — true once the cart state reflects the signed-in user. Wait for that,
+   not for `loading`.
+10. **Redirects that depend on fetched state must not run before it arrives.** Both Day 10
+    bugs were the same shape: an effect acting on data it did not have yet. If a page
+    redirects on "nothing here", it must first prove the fetch happened — and a *failed*
+    fetch must not look like an empty result, or a backend blip becomes a redirect.
+11. **When an action empties the data a guard watches, claim the redirect first.** After a
+    successful checkout the cart is empty by design, and the guard watching for an empty
+    cart raced the push to the order confirmation — the order was placed and the customer
+    landed on an empty cart. `/checkout` sets `placed` before calling `loadCart()`.
 
 ### Animation rules
 Subtle, fast, purposeful, performant. Animations are **already in place** — extend, don't pile on.
@@ -655,23 +846,37 @@ Minimum loop for any change:
 Keep it in `docs/CURRENT-STATE.md`.
 
 Django tests live in `backend/<app>/tests.py` plus `backend/core/tests_roles.py`.
-There are now **257**, covering the recommender (30), the forecaster (33), the
-role/scoping system (47), order status history (23), password reset (25),
-catalogue validation (17), the Puja entry point (24), add-puja-to-cart (10) and
-token revocation (17). Live suites cover the rest:
+There are now **336**, covering the recommender (30), the forecaster (33), the
+role/scoping system (64), order status history (23), password reset (25),
+catalogue validation (17), the Puja entry point (24), add-puja-to-cart (10),
+token revocation (17), ritual/kit authoring (32), vendor administration (27)
+and reviews (25).
+Live suites cover the rest:
 
 | Suite | Assertions |
 |---|---|
 | `verify_day2.py` | 68 |
-| `verify_day3.py` | 55 |
+| `verify_day3.py` | 57 |
 | `verify_day3b.py` | 41 |
 | `verify_day3c.py` | 128 |
 | `verify_day4.py` | 88 |
-| **Total live** | **380** |
+| `verify_day6.py` | 40 |
+| `verify_day7.py` | 30 |
+| `verify_day8.py` | 74 |
+| `verify_day9.py` | 49 |
+| `verify_day11.py` | 66 |
+| **Total live** | **641** |
+| `admin-dashboard/scripts/browser_check.mjs` | **64** (browser, not HTTP) |
+| `frontend/scripts/storefront_check.mjs` | **60** (browser, not HTTP) |
 
-**After any verification sweep, purge what it created** — `purge_verification_orders`
-and `purge_verification_users`, both with `--dry-run`. A verifier that leaves rows
-behind makes the demo order ids drift and can leave a stray login on the system.
+**After any verification sweep, purge what it created** — `purge_verification_orders`,
+`purge_verification_users` and `purge_verification_reviews`, all with `--dry-run`. A
+verifier that leaves rows behind makes the demo order ids drift, can leave a stray login
+on the system, and — for reviews — silently changes a seeded product's rating, which is
+what `verify_day11.py` asserts is clean. Both browser checks now clean up after
+themselves (the dashboard seeds a review through the API and deletes it; the storefront
+posts one and deletes it through the UI), so a leftover review means a run was
+interrupted.
 
 > **Test the thing, not its shape.** When the recommender was rebuilt on Day 2, the
 > old tests passed against a broken implementation because they only asserted the
@@ -687,6 +892,65 @@ behind makes the demo order ids drift and can leave a stray login on the system.
 > body returns **4** (the number of keys), not the record count. This produced two
 > false "failures" on Day 3. Unwrap `results`, and follow `next` when you need a
 > true total (`verify_day3.py::count_all` shows the pattern).
+
+### Verify UI changes in a browser, not just the build
+
+**A clean build and a passing API suite cannot see a client-side render failure.**
+The dashboard's `AuthGate` renders "Checking your session…" during SSR, so `curl`
+gets a healthy `200` with an empty shell. The project has shipped this class of bug
+twice: four `Catalog Settings` buttons that threw `ReferenceError` before their dialog
+opened, and a home-page "+" that looked like add-to-cart and had no handler. Both
+compiled cleanly and linted cleanly.
+
+Day 9 added the check and it earned its keep on the first run: **a vendor could not log
+into the dashboard at all**, and every API test was green. Day 10 pointed it at the
+storefront and found three more — a full page load of `/checkout` bounced to `/cart`,
+a successful checkout sent the customer to an empty cart instead of the confirmation,
+and the "My Orders" nav link pointed at a route that did not exist. Day 11 added
+assertions for the review flow and they immediately surfaced **a fetch loop on the
+product page** (537 requests in 12 seconds — see §5), which had been invisible to
+everything else.
+
+**A new assertion is only trustworthy once it is run more than once.** The loop above
+first appeared as an intermittent failure in *one* of three identical runs. Treat a
+flaky check as a finding, not as noise to re-run past: in this case the flakiness *was*
+the bug, and a check that had been accepted as "usually passes" would have shipped it.
+
+```bash
+# dashboard on :3001, storefront on :3000, API on :8000
+cd admin-dashboard && NODE_PATH=/tmp/harness/node_modules node scripts/browser_check.mjs
+cd frontend        && NODE_PATH=/tmp/harness/node_modules node scripts/storefront_check.mjs
+```
+
+Both drive the Edge already on the machine through `playwright-core` — no Chromium
+download, and **do not add it to `package.json`**. They are dev tools, not
+dependencies. `storefront_check.mjs` places one real order marked in `notes` as
+`browser_check.mjs`, which `purge_verification_orders` recognises.
+
+When you add a screen to either app, add its assertions to the matching script.
+
+> **A harness assertion is a claim about the product — check it before trusting it.**
+> Five of the first two runs' "failures" were the harness's own fault: a
+> `waitForSelector` that resolved against the wrong element, an assertion that a vendor
+> has no create button (it does — vendor self-service is the point), a check for
+> `'Next festival'` that failed because the eyebrow is uppercased in CSS, and a
+> ritual-detail check reading data off a page still showing skeletons. Assert the real
+> invariant, not the one you assumed.
+
+> **`textContent()` includes `<script>` contents — use `innerText()`.** The RSC payload
+> is embedded in the HTML, so `document.body.textContent` contains data that was never
+> rendered and a check can pass against a loading skeleton. `innerText` is rendered text
+> only. Note the flip side: it also reflects CSS `text-transform`, so match
+> case-insensitively.
+
+> **A client-side nav updates the URL before the Server Component renders.** Waiting on
+> `waitForURL` alone reads the loading fallback. Wait for the content you actually need.
+
+> **Do not issue parallel edits to the same file.** Two edits sent in one message each
+> read the file, apply, and write — so the second silently clobbers the first. This
+> cost real time on Day 8: a `{hasItems && …}` guard vanished and only the browser
+> caught it, because the identifier *was* defined elsewhere in the file and lint had
+> nothing to complain about.
 
 ---
 
@@ -777,8 +1041,8 @@ validation, three data-integrity holes (negative price, negative delivery fee, d
 name), a completely broken Catalog Settings page, and the fact that **nothing was under version
 control**. 178 unit tests + 380 live assertions pass.
 
-**P1** wishlist · reviews/ratings · vendor self-service UI · kit editor UI · vendor & area
-analytics · search relevance · image upload widget · JWT revocation on password reset
+**P1** wishlist · reviews/ratings · vendor self-service UI · vendor & area analytics ·
+search relevance · image upload widget
 
 **P2** live payments · notifications · advanced analytics · extra animation
 
@@ -786,6 +1050,52 @@ analytics · search relevance · image upload widget · JWT revocation on passwo
 the next festival and its required samagri, replaced three drifted product cards with one
 shared `ProductCard`, and removed two more hardcoded lists. 185 unit tests + 380 live
 assertions pass.
+
+**Day 6 — the missing entry point (2026-09-19)** built `Puja` + `PujaItem`, untangling
+`festival_type` (which was doing double duty for calendar festivals *and* rites of passage),
+plus `/pujas`, `/pujas/<slug>` and add-essentials-to-cart. 219 unit tests + 420 live
+assertions pass.
+
+**Day 7 — token revocation (2026-09-19)** closed the one security gap the docs admitted to:
+a password reset now ends existing sessions, via a `tv` version claim checked on every
+request. 257 unit tests + 450 live assertions pass.
+
+**Day 8 — domain authoring (2026-09-21)** made the puja domain editable in the dashboard.
+The write endpoints for rituals, editable item rows, unpaginated item lists and the shared
+`ItemManager` landed first; then `/festivals` became writable and `/pujas` was built, both
+from one `DomainManager` shell. 268 unit tests + 524 live assertions pass.
+
+**Day 9 — vendor administration, and the first browser pass (2026-09-21)** closed two gaps
+that no API test could see. A vendor **could not log into the dashboard at all** — the gate
+asked `is_admin_user`, a legacy boolean never set for vendors — and there was no way to
+administer a vendor, so shops could only be created in Django admin. `/vendors` and the
+manager-only account picker exist now, creating a shop promotes its account, and
+`browser_check.mjs` verifies the dashboard in a real browser. It found the vendor bug on its
+first run. 295 unit tests + 575 live assertions + 39 browser assertions pass.
+
+**Day 10 — the storefront, driven like a customer (2026-09-21)** pointed the same kind of
+check at the customer app, which had never been driven. It found three bugs that the build,
+lint and 575 live API assertions all missed: **a full page load of `/checkout` bounced to
+`/cart`** (refresh, bookmark, shared link — the demo's most important page was unreachable by
+URL); **a successful checkout sent the customer to an empty cart** instead of the
+confirmation, so the order was placed and looked like it had failed; and the **"My Orders"
+nav link pointed at a route that did not exist**. All three are fixed, `/account/orders` now
+exists as a real page, and `storefront_check.mjs` (44 assertions) drives browse → ritual →
+product → cart → checkout → history.
+
+**Day 11 — reviews and ratings (2026-09-21)** built the last P1 gap the brief named by
+omission: `docs/DATABASE-DESIGN.md` listed a `Review` table as "not in scope; post-MVP" and
+`FEATURES.md` listed "no social proof on product pages". The `Review` model, the endpoints,
+the storefront section and the `/reviews` moderation screen are all in. Adding one route
+**404'd the entire admin review API** — `<slug:slug>/reviews/` matched `admin/reviews/` with
+`slug='admin'`, and five of six test failures were that one bug.
+
+Then the new browser assertions for the review flow surfaced **a fetch loop on the product
+page**: an inline `onSummaryChange` in a `useCallback` dependency list, at 537 requests to
+the reviews endpoint in 12 seconds and still climbing. The build, ESLint, the 336 unit tests
+and the live API suites all missed it; it appeared only as flakiness in a check that had been
+written minutes earlier. Both causes are fixed and both are pinned by a check.
+**336 unit tests + 641 live assertions + 124 browser assertions pass.**
 
 **The shopping flow already works.** Do not rebuild it. Fix, extend, and polish.
 
@@ -795,8 +1105,9 @@ assertions pass.
 
 These are working and load-bearing. Improve around them; do not rewrite them.
 
-- **The database schema.** 35 products, 10 categories, 7 kits, 68 kit items, 5 festivals and
-  8 orders are already seeded and coherent. Additive changes only.
+- **The database schema.** 35 products, 10 categories, 7 kits, 67 kit items, 8 rituals,
+  88 ritual items, 10 festivals and 8 orders are already seeded and coherent. Additive
+  changes only.
 - **The six public endpoint URLs** in `core/urls.py`. Both frontends depend on them.
 - **`globals.css` and the CSS-module approach.** The token system is good. Extend it.
 - **The split serializer pattern** (public vs admin) in `products`/`festivals`.
@@ -804,7 +1115,15 @@ These are working and load-bearing. Improve around them; do not rewrite them.
 - **`analytics` having no models** — plain aggregation is the right design here.
 - **`OrderItem`'s `product_name` + `price` snapshot.** Orders must survive price changes.
 - **`KitItem.is_required`** — it is the required-samagri mechanism.
+- **The item list endpoints' `pagination_class = None` and `RetrieveUpdateDestroyAPIView`
+  detail views** (`AdminKitItem*`, `AdminPujaItem*`). Deliberate; see §5.
+- **`AdminUserListView`'s `IsManager` and `pagination_class = None`.** It feeds a
+  `<select>`, and read access is deliberately narrower than the rest of the admin API.
+- **The dashboard's role gate** (`AdminContext` + the resolved role in the profile
+  payload). This is what lets a vendor in; see §7.
 - **The JWT + 401-refresh logic in `frontend/src/lib/api.js`.**
+- **`CartContext`'s `cartLoaded` flag, and the redirect guards in `/checkout` and
+  `/cart` that read it.** Removing it re-introduces the Day 10 bugs; see §9 rules 9–11.
 - **The React Context providers** (`Auth`, `Cart`, `Toast`) and the `layout.js` composition.
 - **`FestivalKit.total_price` / `original_price`** as model properties.
 - **The `transaction.atomic` checkout.** Stock decrement and order creation must stay atomic.

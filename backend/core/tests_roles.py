@@ -389,23 +389,45 @@ class AnalyticsScopingTests(RoleTestBase):
 
 
 class RoleEscalationTests(RoleTestBase):
-    """A user must not be able to promote themselves through the API."""
+    """A user must not be able to promote themselves through the API.
 
-    def test_customer_cannot_patch_own_role(self):
+    These checks used to `PATCH /api/accounts/profile/`. That path does not exist
+    (the real one is `/api/auth/profile/`) and the view accepts **PUT**, not PATCH —
+    so both requests returned 404 and the "role did not change" assertions passed
+    against a request that never reached the code they were guarding. A guard test
+    that cannot fail is worse than no test, because it reads like coverage.
+
+    The version below drives the endpoint that really writes a profile, and asserts
+    the write *did* happen, so the role assertion cannot be vacuous.
+    """
+
+    def test_customer_cannot_put_themselves_into_a_role(self):
         self.auth(self.customer)
-        resp = self.client.patch(
-            '/api/accounts/profile/', {'role': ROLE_SUPER_ADMIN}, format='json',
+        resp = self.client.put(
+            '/api/auth/profile/',
+            {'first_name': 'Renamed', 'role': ROLE_SUPER_ADMIN},
+            format='json',
         )
-        # Either the field is rejected or it is silently read-only — both are
-        # acceptable. What matters is that the role did not change.
+        self.assertEqual(resp.status_code, 200)
+
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.first_name, 'Renamed', 'the write must have happened')
+
         self.customer.profile.refresh_from_db()
         self.assertEqual(self.customer.profile.role, ROLE_CUSTOMER)
 
-    def test_customer_cannot_patch_own_is_admin_user(self):
+    def test_customer_cannot_put_own_is_admin_user(self):
         self.auth(self.customer)
-        self.client.patch(
-            '/api/accounts/profile/', {'is_admin_user': True}, format='json',
+        resp = self.client.put(
+            '/api/auth/profile/',
+            {'first_name': 'Renamed Again', 'is_admin_user': True},
+            format='json',
         )
+        self.assertEqual(resp.status_code, 200)
+
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.first_name, 'Renamed Again')
+
         self.customer.profile.refresh_from_db()
         self.assertFalse(self.customer.profile.is_admin_user)
 
@@ -582,3 +604,92 @@ class VendorPermissionCoherenceTests(RoleTestBase):
         # Whatever happens, no product row may vanish.
         self.assertEqual(Product.objects.filter(name='Shop A Incense').count(), 1)
         self.assertEqual(remaining, 0, 'FK is SET_NULL: products survive but lose their vendor')
+
+
+class VendorPromotionTests(RoleTestBase):
+    """Creating a shop must also make its account a vendor.
+
+    `Vendor.user` points at an ordinary login, and a `Vendor` row alone does not make
+    that account a vendor — the **role** does. Before this, "Add a vendor" attached a
+    shop to an account that still resolved as `customer` and could not open the
+    dashboard, so the VENDOR role could only be granted from Django admin.
+
+    The negative cases matter as much as the positive one: a manager who happens to
+    own a shop must not be demoted, and the promotion must not hand out Django admin
+    access as a side effect.
+    """
+
+    URL = '/api/products/admin/vendors/'
+
+    def test_creating_a_shop_promotes_a_customer(self):
+        self.auth(self.admin)
+        response = self.client.post(self.URL, {
+            'user': self.customer.id,
+            'shop_name': 'Newly Promoted Bhandar',
+            'area': self.area.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.json())
+
+        self.customer.profile.refresh_from_db()
+        self.assertEqual(self.customer.profile.role, ROLE_VENDOR)
+
+    def test_the_promoted_account_can_then_open_the_dashboard(self):
+        """The point of the promotion: `role` is what the dashboard gates on."""
+        self.auth(self.admin)
+        self.client.post(self.URL, {
+            'user': self.customer.id, 'shop_name': 'Gate Check',
+        }, format='json')
+
+        self.auth(self.customer)
+        profile = self.client.get('/api/auth/profile/').json()['profile']
+        self.assertEqual(profile['role'], ROLE_VENDOR)
+
+    def test_promotion_does_not_grant_django_admin(self):
+        """`is_staff` would also open /admin/. A vendor has no business there."""
+        self.auth(self.admin)
+        self.client.post(self.URL, {
+            'user': self.customer.id, 'shop_name': 'No Django Admin',
+        }, format='json')
+        self.customer.refresh_from_db()
+        self.assertFalse(self.customer.is_staff)
+
+    def test_a_manager_owning_a_shop_is_not_demoted(self):
+        self.auth(self.admin)
+        response = self.client.post(self.URL, {
+            'user': self.admin.id, 'shop_name': 'Manager Side Shop',
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.json())
+
+        self.admin.profile.refresh_from_db()
+        self.assertEqual(self.admin.profile.role, ROLE_ADMIN)
+
+    def test_an_existing_vendor_is_left_alone(self):
+        self.auth(self.admin)
+        self.client.post(self.URL, {
+            'user': self.vendor_a_user.id, 'shop_name': 'Second Shop',
+        }, format='json')
+        self.vendor_a_user.profile.refresh_from_db()
+        self.assertEqual(self.vendor_a_user.profile.role, ROLE_VENDOR)
+
+    def test_deleting_a_shop_does_not_revoke_the_role(self):
+        """Closing a shop and revoking a login are separate decisions."""
+        self.auth(self.admin)
+        created = self.client.post(self.URL, {
+            'user': self.customer.id, 'shop_name': 'Short Lived',
+        }, format='json').json()
+
+        self.assertEqual(
+            self.client.delete(f'{self.URL}{created["id"]}/').status_code, 204
+        )
+        self.customer.profile.refresh_from_db()
+        self.assertEqual(self.customer.profile.role, ROLE_VENDOR)
+
+    def test_a_vendor_cannot_create_a_shop(self):
+        """Only a manager may hand out the role."""
+        self.auth(self.vendor_a_user)
+        response = self.client.post(self.URL, {
+            'user': self.customer.id, 'shop_name': 'Escalation Attempt',
+        }, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.customer.profile.refresh_from_db()
+        self.assertEqual(self.customer.profile.role, ROLE_CUSTOMER)

@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from django.contrib.auth.models import User
-from django.core.validators import MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils.text import slugify
 
@@ -171,3 +171,62 @@ class Product(models.Model):
     def __str__(self):
         return self.name
 
+
+
+class Review(models.Model):
+    """One customer's rating and comment on one product.
+
+    `docs/DATABASE-DESIGN.md` listed this as a known omission: "No `Coupon` /
+    `Review` / `Wishlist` tables — not in scope; noted as post-MVP." Reviews are the
+    P1 item that most affects the storefront, because a product page with no social
+    proof is the one thing every shopper notices.
+
+    Three deliberate decisions:
+
+    * **One review per customer per product** (`unique_together`). A product page
+      where one account can post ten five-star rows is worse than no ratings at all,
+      and a unique constraint is the only place that can actually be enforced —
+      a UI check is a suggestion.
+    * **`is_verified_purchase` is recorded at creation**, not derived at read time.
+      It means "this account had ordered this product before writing the review", and
+      it has to be a snapshot: deriving it live would let the badge appear or vanish
+      as unrelated orders arrive.
+    * **`is_approved` defaults to `True`.** Auto-publish with a manager able to hide a
+      review afterwards. Pre-moderation would mean every review is invisible until
+      someone looks, which on a demo with no staff on duty is indistinguishable from
+      the feature not working — and `is_approved=False` is still the mechanism a
+      manager uses when something should not be shown.
+    """
+
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='reviews',
+    )
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='reviews',
+    )
+    rating = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+        help_text='1 to 5 stars.',
+    )
+    title = models.CharField(max_length=120, blank=True)
+    body = models.TextField(blank=True)
+    is_approved = models.BooleanField(
+        default=True,
+        help_text='Uncheck to hide this review from the storefront without deleting it.',
+    )
+    is_verified_purchase = models.BooleanField(
+        default=False,
+        help_text='Set at creation from the reviewer\'s order history. Never recomputed.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        unique_together = ('product', 'user')
+        indexes = [
+            models.Index(fields=['product', 'is_approved']),
+        ]
+
+    def __str__(self):
+        return f'{self.product.name} — {self.rating}★ by {self.user.username}'

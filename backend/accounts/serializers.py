@@ -9,16 +9,33 @@ from .password_reset import decode_uid, check_token
 class UserProfileSerializer(serializers.ModelSerializer):
     """Read-only view of a user's profile.
 
-    ``role`` is exposed but **read-only**. The dashboard needs it to decide which
-    UI to render (a vendor must not be shown area management), and the storefront
-    needs it to label the account. Making it writable would let any customer
-    PATCH themselves into a super admin.
+    ``role`` is the **resolved** role from ``core.permissions.get_role``, not the raw
+    column. The two disagree for legacy rows: a user flagged ``is_staff`` with a
+    default profile resolves to ``admin`` on the server, while the raw column still
+    reads ``customer``. Publishing the raw value had the dashboard and the API
+    disagreeing about the same user — the client was told "customer" while every
+    request was authorised as "admin".
+
+    Read-only either way. A writable ``role`` would let any customer PATCH
+    themselves into a super admin.
+
+    ``is_admin_user`` is kept so existing data and the Django admin filter still
+    work, but it is **not** the dashboard's gate any more. It is only ever set for
+    ``super_admin``/``admin`` (see ``UserProfile.save``), so gating on it locked
+    **vendors** out entirely: the VENDOR role was enforced correctly by the API and
+    had no way to reach a single screen. The role below is the gate.
     """
+
+    role = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
         fields = ['phone', 'address', 'city', 'role', 'is_admin_user']
         read_only_fields = ['role', 'is_admin_user']
+
+    def get_role(self, obj):
+        from core.permissions import get_role
+        return get_role(obj.user)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -27,6 +44,52 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile']
+
+
+class AdminUserSerializer(serializers.ModelSerializer):
+    """A user as the admin dashboard's vendor form needs to see them.
+
+    Deliberately narrow. This backs a **manager-only** endpoint, and the fields it
+    does *not* carry are the point:
+
+    * no ``password`` — a hash, even read-only, has no business in a JSON response;
+    * no ``is_superuser`` / ``is_staff`` / ``permissions`` — the form attaches a shop
+      to an account, it does not administer accounts;
+    * ``role`` is **read-only**, resolved through ``get_role()`` so the dashboard
+      and the server agree on what a user is. A writable ``role`` here would be a
+      privilege-escalation hole: any manager could PATCH a customer to super admin.
+
+    ``has_vendor`` is what makes the picker usable — a user who already owns a shop
+    cannot own a second one (``Vendor.user`` is a ``OneToOneField``), so the form
+    filters them out rather than offering a choice that would 400.
+    """
+
+    role = serializers.SerializerMethodField()
+    has_vendor = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'email', 'first_name', 'last_name',
+                  'is_active', 'role', 'has_vendor']
+        read_only_fields = fields
+
+    def get_role(self, obj):
+        from core.permissions import get_role
+        return get_role(obj)
+
+    def get_has_vendor(self, obj):
+        """Whether this user already owns a shop.
+
+        The view annotates this with an ``EXISTS`` subquery, so the whole list costs
+        one query rather than one per row. The fallback keeps the serializer honest
+        if it is ever used without that annotation — a reverse ``OneToOne`` raises
+        rather than returning ``None`` when absent, which is easy to get wrong.
+        """
+        annotated = getattr(obj, 'has_vendor', None)
+        if annotated is not None:
+            return bool(annotated)
+        from products.models import Vendor
+        return Vendor.objects.filter(user=obj).exists()
 
 
 class RegisterSerializer(serializers.ModelSerializer):

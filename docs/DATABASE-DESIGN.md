@@ -63,6 +63,14 @@ it was originally planned. Every model listed here was verified against
         ┌──────────────────────┐
         │ SyntheticSalesRecord │  ← SYNTHETIC. Feeds the demand forecaster only.
         └──────────────────────┘
+
+        ┌──────────┐  1:N   ┌──────────┐
+        │  Review  │────────│ Product  │   unique (product, user)
+        └────┬─────┘        └──────────┘
+             │ N:1
+        ┌────▼─────┐
+        │   User   │
+        └──────────┘
 ```
 
 ---
@@ -163,6 +171,39 @@ Threads, …).
 | `created_at` / `updated_at` | datetime | |
 
 **Default ordering:** `-popularity_score, -created_at`
+
+#### `Review` — *added Day 11*
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | PK | |
+| `product` | FK → `Product`, CASCADE | |
+| `user` | FK → `User`, CASCADE | Who wrote it |
+| `rating` | small int, 1–5 | Validated on both ends; `0` and `6` are rejected |
+| `title` | varchar(120), blank | |
+| `body` | text, blank | A rating with no words is rejected by the serializer |
+| `is_approved` | bool, default **True** | Auto-publish; a manager hides afterwards |
+| `is_verified_purchase` | bool, default False | **Snapshot**, written once at creation |
+| `created_at` / `updated_at` | datetime | |
+
+**Default ordering:** `-created_at, -id`
+**Constraint:** `unique_together = ('product', 'user')` — one review per customer per product.
+
+Three decisions worth keeping:
+
+- **`is_verified_purchase` is recorded, not derived.** It means "this account had ordered
+  this product before writing the review". Derived live, the badge would appear and vanish as
+  unrelated orders arrived, and a manager could be shown a different badge than the customer.
+  Because it is a snapshot, re-posting an edited review does **not** recompute it.
+- **`is_approved` defaults to `True`.** Pre-moderation would make every review invisible until
+  somebody looked, which on a demo with no staff on duty is indistinguishable from the feature
+  not working.
+- **`average_rating` / `review_count` are not columns.** They are queryset annotations
+  (`with_review_summary()`), so there is no denormalised counter to drift out of step.
+
+> `is_approved` is not `is_active`. The dashboard's toggle is configured with
+> `activeField: 'is_approved'` — patching the wrong boolean returns 200 and changes nothing,
+> which looks like it worked until you reload.
 
 ---
 
@@ -442,4 +483,4 @@ SQLite cannot express these; they are enforced in application code.
 | 2 | `shipping_city` is a bare varchar, not an FK to `Area` | P1 | Chosen deliberately: an FK migration would have required rewriting existing order rows. The values currently match `Area.slug` by convention. |
 | 3 | `is_admin_user` duplication | P2 | Legacy column kept in sync by `save()`. Remove once nothing reads it. |
 | 4 | `custom_user_model = auth.User` | P2 | Using Django's built-in `User` + a profile rather than a custom user model. Migrating later is painful, but changing it now would break both existing repos. |
-| 5 | No `Coupon` / `Review` / `Wishlist` tables | P2 | Not in scope; noted as post-MVP. |
+| 5 | No `Coupon` / `Wishlist` tables | P2 | Not in scope; noted as post-MVP. **`Review` is no longer on this list** — the table exists as of Day 11 (§3.2). |

@@ -13,18 +13,33 @@ leaves a working application behind it. The shopping flow already works — prot
 | Area | State |
 |---|---|
 | Backend API (public + admin) | ✅ all 200 |
-| Auth + authorization | ✅ works, 403 correctly enforced |
+| Auth + authorization | ✅ works, 403 correctly enforced; tokens revocable since Day 7 |
 | Cart → checkout → order history | ✅ works end to end |
 | Festival kits / samagri | ✅ works |
-| Seeded data | ✅ 35 products, 7 kits, 10 categories |
+| Seeded data | ✅ 35 products, 7 kits, 8 rituals, 10 categories |
 | Customer frontend **build** | ✅ **fixed Day 1** |
 | Delivery fee in order total | ✅ **fixed Day 1** |
 | Admin dashboard | ✅ **de-gated + de-mocked Day 1** (read-only) |
-| Recommendations | ✅ **ranked + explainable Day 2** (23 tests) |
+| Recommendations | ✅ **ranked + explainable Day 2** (30 tests) |
 | Demand prediction | ✅ **built Day 2** — real model, labelled synthetic data (33 tests) |
 | Festival calendar | ✅ **repaired Day 2** — all rows were in the past |
-| Vendor role | ❌ does not exist → **Day 3** |
-| Areas | ⚠️ hardcoded 3-value enum → **Day 3** |
+| Vendor role | ✅ **built Day 3** — `core/permissions.py` is the single source of truth |
+| Areas | ✅ **built Day 3** — replaced the hardcoded `CITY_CHOICES` enum |
+| Admin CRUD (products, categories, areas) | ✅ **built Day 3** |
+| Order status timeline | ✅ **real timestamps Day 4** — append-only `OrderStatusEvent` |
+| Password reset | ✅ **built Day 4**; ✅ **revokes sessions Day 7** |
+| Puja entry point | ✅ **built Day 6** — the sixth required discovery route |
+| Kit / ritual authoring in the dashboard | ✅ **built Day 8** — one shared editor, both domains |
+| Vendor administration | ✅ **built Day 9** — `/vendors`; creating a shop promotes its account |
+| A vendor can use the dashboard | ✅ **fixed Day 9** — the gate asked `is_admin_user`, so the role was unreachable |
+| Browser verification | ✅ **added Day 9** — `browser_check.mjs`; found the vendor bug immediately |
+| Storefront verification | ✅ **added Day 10** — `storefront_check.mjs`; found three more bugs, incl. checkout being unreachable by URL |
+| Full order history page | ✅ **built Day 10** — `/account/orders`; the nav link had pointed at nothing |
+| **Reviews and ratings** | ✅ **built Day 11** — model, endpoints, storefront section and `/reviews` moderation |
+| Review-flow browser coverage | ✅ **added Day 11** — found a 537-request fetch loop on the product page that nothing else could see |
+
+**Remaining P0 work: none.** Everything above is done and verified. What is left is P1
+(wishlist, image upload widget, search relevance) and P2.
 
 ---
 

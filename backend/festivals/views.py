@@ -4,7 +4,9 @@ from rest_framework.views import APIView
 from django.db.models import Count, Q
 from django.utils import timezone
 from datetime import timedelta
-from .models import FestivalKit, KitItem, UpcomingFestival, Puja, PujaItem
+from .models import (
+    FESTIVAL_CHOICES, FestivalKit, KitItem, UpcomingFestival, Puja, PujaItem,
+)
 from products.models import Product
 from .serializers import (
     FestivalKitListSerializer, FestivalKitDetailSerializer,
@@ -67,6 +69,29 @@ class UpcomingFestivalsView(generics.ListAPIView):
             date__gte=today,
             is_active=True
         )[:self.get_limit()]
+
+
+class FestivalChoicesView(APIView):
+    """The festival/ritual vocabulary, read straight from ``FESTIVAL_CHOICES``.
+
+    The dashboard's kit and ritual forms both need the full enum to populate a
+    select. Deriving it from the kits that happen to exist would be the same trap
+    as the old hardcoded ``CITY_CHOICES``, only in reverse: a type with no kit yet
+    would be missing from the dropdown, so the form could not create the first kit
+    of a new type. The enum is the single source of truth and is published as-is.
+
+    Public on purpose — every label here is already visible in the
+    ``festival_type_display`` of the public kit list, so gating it would protect
+    nothing.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    pagination_class = None
+
+    def get(self, request):
+        return Response([
+            {'value': value, 'label': label} for value, label in FESTIVAL_CHOICES
+        ])
 
 
 class PujaListView(generics.ListAPIView):

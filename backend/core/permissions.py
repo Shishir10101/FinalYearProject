@@ -119,6 +119,39 @@ def vendor_for(user):
     return Vendor.objects.filter(user=user).first()
 
 
+def promote_to_vendor(user):
+    """Give an account the VENDOR role, if it does not already outrank it.
+
+    Creating a ``Vendor`` row attaches a shop to an ordinary login. That alone does
+    not make the account a vendor — the **role** does. Without this, "Add a vendor"
+    produced a shop whose owner still resolved as ``customer`` and could not open
+    the dashboard at all, which made the role administrable only from Django admin.
+
+    Two deliberate limits:
+
+    * Only ``customer`` accounts are promoted. If a manager or super admin happens
+      to own a shop, their higher role is left alone — demoting them would silently
+      remove access they legitimately have.
+    * ``is_staff`` is **not** set. It is tempting, because it used to be what let an
+      account reach the admin API, but it also grants Django admin at ``/admin/``,
+      and a vendor has no business there. ``IsStaffRole`` resolves through
+      ``get_role()``, so the explicit role is sufficient.
+
+    Returns ``True`` when a change was made, so callers and tests can tell the
+    difference between "promoted" and "already a vendor".
+    """
+    from accounts.models import UserProfile  # local import avoids a circular import
+
+    # `get_or_create` first: a `QuerySet.update()` against a missing row returns 0
+    # and raises nothing, which is how a role backfill once silently did nothing.
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    if profile.role != ROLE_CUSTOMER:
+        return False
+    profile.role = ROLE_VENDOR
+    profile.save(update_fields=['role', 'is_admin_user', 'updated_at'])
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Permission classes
 # ---------------------------------------------------------------------------
@@ -146,6 +179,26 @@ class IsManagerOrReadOnly(permissions.BasePermission):
             return False
         if request.method in permissions.SAFE_METHODS:
             return True
+        return is_manager(request.user)
+
+
+class IsManager(permissions.BasePermission):
+    """Managers only — **including for reads.**
+
+    ``IsManagerOrReadOnly`` deliberately lets a vendor read the shared catalogue,
+    because a vendor needs to know what exists before deciding what to stock. This
+    class is for the smaller set of endpoints where a read is itself a privilege:
+    anything that enumerates *people*.
+
+    The dashboard's vendor form needs to list candidate user accounts to attach a
+    shop to. A vendor must not be able to enumerate the user table, so read access
+    has to be narrower than "any staff role". Use this instead of hand-rolling a
+    role check inside a view.
+    """
+
+    message = 'Only an administrator can perform this action.'
+
+    def has_permission(self, request, view):
         return is_manager(request.user)
 
 

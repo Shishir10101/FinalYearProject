@@ -154,14 +154,26 @@ The customer-facing tracker. Horizontal on desktop, vertical under 640px.
 | Element | customer | vendor | admin / super |
 |---|---|---|---|
 | Sidebar: Festival Kits | — | hidden | shown |
+| Sidebar: Rituals | — | hidden | shown |
+| Sidebar: Vendors | — | hidden | shown |
 | Sidebar: Catalog Settings | — | hidden | shown |
 | Sidebar: Demand Forecast | — | shown (scoped) | shown |
+| Role badge | — | **Vendor** | Administrator / Super Admin |
 | Product form: Vendor picker | — | read-only "Your shop" | full dropdown |
+| Kit / ritual authoring controls | — | hidden (read-only items) | shown |
 | `/settings` | — | explanatory panel | full CRUD |
 
 **Hiding is a courtesy, not a boundary.** Every hidden screen is also enforced
 server-side. A vendor who types `/settings` gets an explanatory panel — never a
-broken-looking empty table.
+broken-looking empty table. Same for `/festivals` and `/pujas`: a vendor can read a
+kit and its items, and every write control is absent, because the API would refuse it
+with a 403 and a button that always fails is worse than no button.
+
+**A vendor sees a real dashboard, not a locked door.** Until Day 9 the vendor role
+could not open the panel at all — the gate asked "is this an administrator?" instead
+of "may this account use the dashboard?". The sidebar now renders for all three staff
+roles, with the manager-only entries filtered out and the role badge naming what they
+are. Verified in a browser, because no API test can see a login bounce.
 
 ---
 
@@ -196,6 +208,8 @@ Tables for lists, cards for KPIs and alerts, modals for editing.
 | Component | Location | Used for |
 |---|---|---|
 | `ProductCard` | `frontend/src/components/ProductCard.js` | **Every** product tile — home, catalogue, recommendations |
+| `DomainManager` | `admin-dashboard/src/components/DomainManager.js` | The list + form + delete shell behind `/festivals`, `/pujas` **and** `/vendors` |
+| `ItemManager` | `admin-dashboard/src/components/ItemManager.js` | The item list of **both** a kit and a ritual — add, edit quantity, toggle required, remove |
 | `Modal` | `admin-dashboard/src/components/Modal.js` | All create/edit dialogs |
 | `ConfirmDialog` | `admin-dashboard/src/components/ConfirmDialog.js` | Every destructive action |
 | `Badge` | `.badge` + variants | Status pills |
@@ -205,6 +219,20 @@ Tables for lists, cards for KPIs and alerts, modals for editing.
 | `StatusTimeline` | inline in order detail page | Order tracking |
 | `Sparkline` | inline in forecast page | Forecast trend |
 | `Toast` | `frontend/src/context/ToastContext` | Transient feedback |
+
+### Screen inventory
+
+| Route | App | Notes |
+|---|---|---|
+| `/` | customer | Festival calendar leads, not a product grid |
+| `/products` · `/products/[slug]` | customer | Catalogue and detail |
+| `/festivals` · `/pujas` · `/pujas/[slug]` | customer | Three of the six discovery entry points |
+| `/recommendations` | customer | Every card carries the backend's reason |
+| `/cart` · `/checkout` | customer | **Both wait for `cartLoaded` before deciding anything** — see §10 |
+| `/account` | customer | Profile + the five most recent orders |
+| `/account/orders` · `/account/orders/[id]` | customer | Full history; detail with the status timeline |
+| `/auth/*` | customer | Login, register, forgot/reset password |
+| `/` · `/products` · `/orders` · `/festivals` · `/pujas` · `/vendors` · `/forecast` · `/settings` | admin | All manager-only except Products, Orders and Forecast |
 
 **Accessibility:** modals set `role="dialog"` and `aria-modal`, close on `Escape`
 and backdrop click, lock body scroll, and label their close button. Search inputs
@@ -230,6 +258,44 @@ Component home page can render it without passing a function across the boundary
 
 **Rule: do not hand-roll a product tile.** Adding a fourth variant is how the
 first three drifted apart.
+
+### `DomainManager` — one shell for kits, rituals and vendors
+
+`/festivals`, `/pujas` and `/vendors` are the same screen with different fields: a
+list, a create/edit form, a delete confirmation, an enable/disable toggle, a search
+box, and (for the first two) a nested item editor behind a **Show items** toggle. All
+three are `DomainManager` with a config object, and the config is a **module-level
+constant** — it is a `useCallback` dependency inside the component, so an inline
+literal would be a new object every render and re-fetch forever.
+
+| Config key | Purpose |
+|---|---|
+| `listUrl` / `detailUrl(id)` | The collection and one row |
+| `itemsUrl(id)` / `itemUrl(id)` | Handed straight to `ItemManager`. **Omit `itemsUrl`** for a collection with no item list — the Items control disappears |
+| `parentType` | `'kit'` or `'puja'` — also the POST payload key |
+| `lookups` | `{ key: url }` for select options, e.g. the festival enum or the account picker |
+| `fields` | Form descriptors: `text`, `textarea`, `number`, `select`, `checkbox`. `createOnly: true` offers a field once and then freezes it |
+| `columns` | `{ label, render(row) }` table descriptors |
+| `displayName(row)` | Label for the edit title and the delete confirmation. Defaults to `row.name`, which a `Vendor` does not have |
+| `toForm` / `toPayload` | Row → form values, and form → API payload |
+| `matches(row, query)` | Local filtering, so no search round-trip |
+
+**Rule: do not fork it.** A fourth collection with a list, a form and items belongs
+here as another config.
+
+`createOnly` exists for one specific hazard: a shop's owning account is a
+`OneToOneField`, and reassigning it would silently transfer everything that account
+owns. The field is offered at creation and shown as fixed afterwards, with a hint
+saying so.
+
+### The expanded item panel is a table row that is not a data row
+
+Below 720px the tables pin their first column (`position: sticky`) and set
+`white-space: nowrap` on every cell, so a scrolled row stays attributable. A
+full-width panel row would inherit both — pinned to the left edge and unable to wrap,
+i.e. a broken editor on exactly the screens the responsive pass was for. It opts out
+with the global `.table-panel` class, which wins on specificity where a CSS-module
+class could not.
 
 ---
 
@@ -266,6 +332,48 @@ Two rules this composition follows:
 | 1 | Older admin tables (orders, festivals) are not responsive below ~700px | P1 |
 | 2 | No dark mode — the palette is light-only by design | P2 |
 | 3 | Focus-visible outlines are browser default, not customised | P2 |
-| 4 | No image upload widget; the `image` field is API-only | P1 |
+| 4 | No image upload widget; the `image` field is API-only (and deliberately absent from the kit write payload) | P1 |
 | 5 | Festival kit cards are still bespoke markup, not a shared component | P2 |
 | 7 | Toasts are not announced to screen readers (`aria-live` missing) | P1 |
+| 8 | A ritual's linked kit is read-only on `/pujas` — the FK is on the kit, so it is set from `/festivals`. By design, but it is a two-page workflow | P2 |
+| 9 | `react-hooks/set-state-in-effect` fires on `layout.js`'s drawer-close effect and on `AuthContext.js`'s `loadUser` effect (pre-existing). Does not affect either build | P2 |
+| 10 | The browser harnesses are not wired into any script — they need `playwright-core` installed outside the project, so they are run by hand | P2 |
+| 11 | No image upload widget anywhere; `image` is API-only for products and deliberately absent from the kit write payload | P1 |
+
+---
+
+## 10. Loading vs loaded — the Day 10 lesson
+
+Three real bugs came from one mistake: **treating `loading === false` as "the data has
+arrived"**.
+
+```js
+const [loading, setLoading] = useState(false);   // "not loading *yet*"
+// …
+if (!loading && items.length === 0) redirect();  // also true before the first fetch
+```
+
+On a fresh page load the state is `{ loading: false, items: [] }`, which is
+indistinguishable from "the cart is genuinely empty". `/checkout` redirected on exactly
+that and sent customers with a full cart to `/cart`; `/cart` announced an empty cart.
+
+**The rule: a flag that means "we do not know yet" must be separate from one that means
+"we asked and there is nothing".** `CartContext` exposes `cartLoaded`, derived from the
+user the current state belongs to:
+
+| Value | Meaning |
+|---|---|
+| `loadedForUserId === undefined` | nothing fetched yet |
+| `loadedForUserId === null` | fetched, nobody signed in |
+| `loadedForUserId === user.id` | fetched for this user |
+
+A **failed** fetch deliberately leaves it untouched — otherwise a backend blip becomes
+an empty cart and the redirect fires anyway.
+
+Two corollaries:
+
+1. **A redirect that depends on fetched state must not run before it arrives.** If a page
+   redirects on "nothing here", prove the fetch happened first.
+2. **When an action empties the data a guard watches, claim the redirect first.** After
+   checkout the cart is empty by design; `/checkout` sets `placed` before calling
+   `loadCart()`, so the guard stands down while the confirmation is pushed.

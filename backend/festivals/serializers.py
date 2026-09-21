@@ -103,9 +103,25 @@ class PujaDetailSerializer(serializers.ModelSerializer):
 
 
 class FestivalKitAdminSerializer(serializers.ModelSerializer):
+    """Write serializer for kits.
+
+    An explicit field list rather than ``__all__``, for two reasons: the dashboard
+    table needs ``item_count`` (a declared field is not reliably picked up by
+    ``__all__``), and ``image`` is a file upload that a JSON form cannot set — a
+    client posting a string path there would get a confusing validation error
+    instead of a field it simply does not render.
+    """
+
+    item_count = serializers.SerializerMethodField()
+
     class Meta:
         model = FestivalKit
-        fields = '__all__'
+        fields = ['id', 'name', 'festival_type', 'description', 'discount_percent',
+                  'puja', 'is_active', 'item_count', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+
+    def get_item_count(self, obj):
+        return obj.items.count()
 
 
 class KitItemAdminSerializer(serializers.ModelSerializer):
@@ -131,15 +147,22 @@ class PujaAdminSerializer(serializers.ModelSerializer):
 
     `slug` is read-only because `Puja.save()` derives and uniquifies it — letting a
     client set it would allow two rituals to collide on the UNIQUE column.
+
+    `kit_names` is read-only and informational. The link is a FK **on the kit**
+    (`FestivalKit.puja`), because a kit declares which ritual it serves and one
+    ritual may legitimately have several bundles. So a ritual cannot be given a
+    kit from this side, and the dashboard says so rather than offering a picker
+    that would have to pick one arbitrarily.
     """
 
     item_count = serializers.SerializerMethodField()
     kit_count = serializers.SerializerMethodField()
+    kit_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Puja
         fields = ['id', 'name', 'slug', 'description', 'occasion_type',
-                  'is_active', 'item_count', 'kit_count', 'created_at']
+                  'is_active', 'item_count', 'kit_count', 'kit_names', 'created_at']
         read_only_fields = ['slug', 'created_at']
 
     def get_item_count(self, obj):
@@ -147,6 +170,9 @@ class PujaAdminSerializer(serializers.ModelSerializer):
 
     def get_kit_count(self, obj):
         return obj.kits.count()
+
+    def get_kit_names(self, obj):
+        return [kit.name for kit in obj.kits.all()]
 
 
 class PujaItemAdminSerializer(serializers.ModelSerializer):

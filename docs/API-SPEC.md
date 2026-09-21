@@ -98,10 +98,52 @@ Access token lifetime: 1 day. Refresh: 7 days, with rotation.
 }
 ```
 
-**`profile.role` is read-only.** `PATCH`/`PUT` silently ignore any attempt to
-change it — verified by `core/tests_roles.py::RoleEscalationTests`.
+**`profile.role` is the *resolved* role**, computed by `core.permissions.get_role` —
+not the raw `UserProfile.role` column. Those differ for accounts created before roles
+existed: `get_role()` falls back to `is_staff`, so a legacy staff user resolves to
+`admin` while the raw column still reads `customer`. Publishing the raw value had the
+dashboard and the API disagreeing about the same user.
+
+**`profile.role` is read-only.** `PUT /profile/` silently ignores any attempt to change
+it — the write still lands for the fields it does accept, which is asserted so the
+check cannot pass vacuously. **`PATCH` is not implemented** (405); the endpoint uses
+`PUT`.
+
+> Two "role is read-only" guards previously exercised `PATCH` against
+> `/api/accounts/profile/` — a path that does not exist. Both passed against a 404
+> without reaching the guarded code. Fixed on Day 9.
 
 **Role values:** `super_admin` · `admin` · `vendor` · `customer`
+
+**`is_admin_user` is legacy** and is `false` for vendors. It is **not** the dashboard's
+gate — gating on it locked the VENDOR role out of the product entirely.
+
+### `GET /admin/users/` *(added Day 9)*
+
+The account picker behind the dashboard's vendor form. **Manager-only, including for
+reads** — this is the one endpoint in the admin API where reading is itself a
+privilege, because it enumerates *people*. A vendor gets `403`.
+
+```json
+[
+  {"id": 1, "username": "admin", "email": "admin@pujasmagri.com",
+   "first_name": "Admin", "last_name": "User", "is_active": true,
+   "role": "super_admin", "has_vendor": false},
+  {"id": 2, "username": "testuser", "email": "test@example.com",
+   "first_name": "Ram", "last_name": "Sharma", "is_active": true,
+   "role": "customer", "has_vendor": false}
+]
+```
+
+| Detail | Note |
+|---|---|
+| Shape | A **bare array**, not paginated. It feeds a `<select>`; a paginated list would silently offer only the first page of candidates |
+| `role` | Resolved through `get_role()`, read-only |
+| `has_vendor` | `Vendor.user` is a `OneToOneField`, so a second shop for the same account is a `400`. The form filters these out rather than offering a choice that cannot succeed |
+| Not returned | `password`, `is_staff`, `is_superuser`, `last_login`, `date_joined`, `permissions`. A hash has no business in a JSON response |
+| `?search=` | Matches username, email, first name, last name |
+| `?unassigned=1` | Only accounts that do not already own a shop |
+| Writes | None. `POST`/`PATCH` → `405`; a role cannot be escalated through this surface |
 
 ### `POST /password-reset/`
 
@@ -230,6 +272,61 @@ The caller's own token is dead too, so the client must log in again.
 
 `delivery_fee: null` means "use the store-wide default" (`/orders/config/`).
 
+### Reviews *(added Day 11)*
+
+| Method | Path | Required role | Notes |
+|---|---|---|---|
+| `GET` | `/<slug>/reviews/` | **public** | Approved reviews + the summary + your own review |
+| `POST` | `/<slug>/reviews/` | authenticated | Create **or update** your own — one per customer per product |
+| `DELETE` | `/reviews/<id>/` | authenticated | Your own, or any if you are a manager |
+| `GET` | `/admin/reviews/` | **manager** | Every review including hidden ones. **Unpaginated** |
+| `GET`/`PATCH`/`DELETE` | `/admin/reviews/<id>/` | **manager** | `PATCH` toggles `is_approved` |
+
+`GET /products/<slug>/reviews/` → the whole section in one round trip:
+
+```json
+{
+  "summary": {
+    "average_rating": 4.5,
+    "review_count": 2,
+    "distribution": { "5": 1, "4": 1, "3": 0, "2": 0, "1": 0 }
+  },
+  "count": 2,
+  "next": null,
+  "previous": null,
+  "results": [
+    { "id": 3, "rating": 4, "title": "Solid quality", "body": "…",
+      "author": "Ram S.", "is_mine": false,
+      "is_verified_purchase": true, "created_at": "…", "updated_at": "…" }
+  ],
+  "mine": null
+}
+```
+
+- **`average_rating` is `null`, not `0`,** when nothing has been rated. Zero would read as
+  "everyone gave it one star".
+- **The public list never publishes who wrote a review.** No `user`, `user_id`, `username`
+  or `email` appears in a row; `author` is a display name (`Ram S.`), never a full name or an
+  email address. This list is anonymous-readable, so that is a privacy boundary, not a style
+  choice.
+- **`POST` is create-or-update.** A second submission edits the existing review and returns
+  `200`; a new one returns `201`. There is no way to file two reviews for one product.
+- **`is_verified_purchase` is read-only.** A manager cannot rewrite whether somebody had
+  bought the thing — `PATCH`ing it returns `200` and is ignored. It is a snapshot taken when
+  the review was written, so editing a review does not recompute it either.
+- **A rating with no words is a `400`** on `body`: a star with nothing behind it is not much
+  help to the next shopper.
+- **`/admin/reviews/` is unpaginated**, like every other admin collection here. Paginated, a
+  hidden review on page 2 would be invisible to the only person who can unhide it. The
+  *public* list on a product page **is** paginated, because that one is browsable content.
+
+> **Route-ordering trap, in the form that actually bit.** `<slug:slug>/reviews/` matched
+> `admin/reviews/` with `slug='admin'`, so the whole admin review API returned 404 — for
+> managers, customers and anonymous readers alike. The literal route sat *below* it and never
+> ran. The rule is stronger than "the slug detail route goes last": **nothing with a slug
+> converter may sit above a literal path of the same depth.** `products/urls.py` is now
+> ordered public literals → admin → slug patterns.
+
 ### Admin — vendor-scoped
 
 | Method | Path | Required role | Notes |
@@ -245,6 +342,21 @@ The caller's own token is dead too, so the client must log in again.
 | `GET`/`PATCH`/`DELETE` | `/admin/areas/<id>/` | **manager** | |
 | `GET`/`POST` | `/admin/vendors/` | read: any staff (vendors see only self) · write: **manager** | |
 | `GET`/`PATCH`/`DELETE` | `/admin/vendors/<id>/` | read: any staff (vendors see only self) · write: **manager** | |
+
+### Creating a vendor *(behaviour clarified Day 9)*
+
+`POST /admin/vendors/` takes a `user` id and a `shop_name`. **Creating the shop also
+promotes that account to the `vendor` role**, because the `Vendor` row alone does not
+make an account a vendor — the role does, and nothing else in the product could set it.
+Before this, "Add a vendor" attached a shop to an account that still resolved as
+`customer` and could not open the dashboard.
+
+| Rule | Why |
+|---|---|
+| Only `customer` accounts are promoted | A manager or super admin who owns a shop keeps their higher role; demoting them would silently remove access they have |
+| `is_staff` is **not** set | It would also grant Django admin at `/admin/`, and a vendor has no business there. `IsStaffRole` resolves through `get_role()`, so the role suffices |
+| `DELETE` does **not** demote | Revoking a login is an account decision, not a shop decision; conflating them would let removing a shop lock someone out of the dashboard |
+| Deleting a shop does not touch its products | `Product.vendor` is `SET_NULL`, so stock becomes unassigned rather than disappearing |
 
 **Product create payload**
 
@@ -532,14 +644,83 @@ Past festivals are never returned, whatever the limit.
 **Every item carries a `reason`.** There is no random-product path. See
 `docs/AI-RECOMMENDATION.md` for the weight table and worked examples.
 
-### Admin kits
+### Admin kits and rituals *(rituals added Day 8)*
+
+Both collections expose the same URL shape, the same permission class
+(`IsManagerOrReadOnly`) and the same item sub-resource, because the dashboard drives
+them from one shared editor. A vendor may read either and write neither.
 
 | Method | Path | Required |
 |---|---|---|
 | `GET`/`POST` | `/admin/kits/` | read: any staff · write: **manager** |
 | `GET`/`PATCH`/`DELETE` | `/admin/kits/<id>/` | read: any staff · write: **manager** |
 | `GET`/`POST` | `/admin/kits/<kit_id>/items/` | read: any staff · write: **manager** |
-| `DELETE` | `/admin/kit-items/<id>/` | **manager** |
+| `GET`/`PATCH`/`DELETE` | `/admin/kit-items/<id>/` | **manager** |
+| `GET`/`POST` | `/admin/pujas/` | read: any staff · write: **manager** |
+| `GET`/`PATCH`/`DELETE` | `/admin/pujas/<id>/` | read: any staff · write: **manager** |
+| `GET`/`POST` | `/admin/pujas/<puja_id>/items/` | read: any staff · write: **manager** |
+| `GET`/`PATCH`/`DELETE` | `/admin/puja-items/<id>/` | **manager** |
+
+**Both item lists are deliberately unpaginated** and return a **bare JSON array**, not
+a `{count, next, previous, results}` envelope. They are the body of an editor, not a
+browsable table: `PAGE_SIZE` is 12, Bratabandha has 14 items and Daily Puja has 21, so
+a paginated list would silently show an incomplete kit. Two tests build 14 rows and
+assert the bare list — a `results` dict would still pass a `len()` check against a page
+and hide exactly that bug.
+
+**Item detail is `RetrieveUpdateDestroy`, not delete-only.** Changing a quantity from
+1 to 2 must not require deleting the row and re-adding it, which also churns its id.
+
+**Kit write payload** — an explicit field list, not `__all__`:
+
+```json
+{
+  "id": 8, "name": "Dashain Puja Complete Kit", "festival_type": "dashain",
+  "description": "…", "discount_percent": 10, "puja": 3, "is_active": true,
+  "item_count": 8, "created_at": "…", "updated_at": "…"
+}
+```
+
+`image` is **not** in the payload: it is a file upload, and a JSON form that posts a
+string path to it gets a confusing validation error for a field it never rendered.
+`item_count` is server-computed and read-only.
+
+**Ritual write payload:**
+
+```json
+{
+  "id": 10, "name": "Bratabandha", "slug": "bratabandha", "description": "…",
+  "occasion_type": "bratabandha", "is_active": true,
+  "item_count": 14, "kit_count": 1, "kit_names": ["Bratabandha Samagri Kit"],
+  "created_at": "…"
+}
+```
+
+| Field | Note |
+|---|---|
+| `slug` | **Read-only.** `Puja.save()` derives and uniquifies it, so a repeated name returns 201 with a suffixed slug rather than a 500. Sending one is ignored. |
+| `kit_names` / `kit_count` | **Read-only reports** of the reverse relation. A ritual cannot be *given* a kit here: the FK is on the kit (`FestivalKit.puja`), because a kit declares which ritual it serves and one ritual may have several bundles. Set it from the kit endpoint. |
+
+### `GET /choices/` *(added Day 8)*
+
+The festival/ritual vocabulary, read straight from `FESTIVAL_CHOICES`. Public, because
+every label is already visible in the `festival_type_display` of the public kit list —
+gating it would protect nothing.
+
+```json
+[
+  {"value": "dashain", "label": "Dashain"},
+  {"value": "tihar", "label": "Tihar"},
+  {"value": "bratabandha", "label": "Bratabandha"},
+  {"value": "other", "label": "Other"}
+]
+```
+
+Both dashboard forms draw their type dropdown from here rather than from the kits that
+happen to exist. Deriving it from existing kits would be the old hardcoded
+`CITY_CHOICES` trap in reverse: a type with no kit yet would be missing from the
+dropdown, so the first kit of a new type could never be created. A test asserts
+`nag_panchami` and `other` are present when only one `dashain` kit exists.
 
 ---
 
@@ -632,10 +813,30 @@ Query params: `?horizon=30` (1–90) · `?limit=12` (1–50) · `?product=<id>`
 | `/products/admin/areas/*` | ❌ 403 | ❌ 403 | ✅ | ✅ |
 | `/products/admin/vendors/*` (read) | ❌ 403 | ✅ *self only* | ✅ | ✅ |
 | `/products/admin/vendors/*` (write) | ❌ 403 | ❌ 403 | ✅ | ✅ |
+| `/auth/admin/users/*` | ❌ 403 | ❌ 403 | ✅ | ✅ |
+| `/festivals/admin/*` (read) | ❌ 403 | ✅ | ✅ | ✅ |
 | `/festivals/admin/*` (write) | ❌ 403 | ❌ 403 | ✅ | ✅ |
+| `/products/<slug>/reviews/` (read) | ✅ | ✅ | ✅ | ✅ |
+| `/products/<slug>/reviews/` (write) | ✅ *own* | ✅ *own* | ✅ *own* | ✅ *own* |
+| `/products/reviews/<id>/` (DELETE) | ✅ *own* | ✅ *own* | ✅ | ✅ |
+| `/products/admin/reviews/*` | ❌ 403 | ❌ 403 | ✅ | ✅ |
 
-Verified end-to-end by `backend/verify_day3.py` (55 assertions) and
-`backend/core/tests_roles.py` (47 unit tests).
+`/auth/admin/users/` is the exception that proves the rule: every other admin endpoint
+lets a vendor read, because a vendor legitimately needs the catalogue. That one
+enumerates *people*, so read access is manager-only.
+
+Verified end-to-end by `backend/verify_day3.py` (57 assertions),
+`backend/verify_day8.py` (74 assertions — the kit/ritual write paths and the vendor
+read-but-not-write boundary), `backend/verify_day9.py` (49 assertions — the account
+picker, the resolved role, and shop creation promoting an account),
+`backend/verify_day11.py` (66 assertions — the review write, privacy, verified-purchase
+and moderation paths), and `backend/core/tests_roles.py` (64 unit tests).
+
+Review moderation is also refused to a vendor **through the dashboard**, not just at the
+API: `browser_check.mjs` signs in as `vendor1`, confirms `Reviews` is absent from the
+sidebar, navigates to `/reviews` anyway, and asserts the page shows an error state with
+no rows — and that the vendor is still signed in afterwards, because a 403 that dumps you
+back on the login screen reads as a broken login rather than a permission boundary.
 
 ---
 

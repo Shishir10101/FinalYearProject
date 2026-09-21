@@ -5,17 +5,21 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.mail import send_mail
+from django.db.models import Exists, OuterRef, Q
 import logging
 
 from .serializers import (
     RegisterSerializer, UserSerializer, ProfileUpdateSerializer,
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
+    AdminUserSerializer,
 )
 from .password_reset import build_reset_url
 from .throttling import PasswordResetThrottle
 from .tokens import (
     revoke_tokens, VersionedTokenObtainPairSerializer, VersionedTokenRefreshSerializer,
 )
+from core.permissions import IsManager
+from products.models import Vendor
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,55 @@ class RegisterView(generics.CreateAPIView):
             "message": "Registration successful",
             "user": UserSerializer(user).data
         }, status=status.HTTP_201_CREATED)
+
+
+class AdminUserListView(generics.ListAPIView):
+    """Candidate accounts for the dashboard's vendor form. **Managers only.**
+
+    Creating a ``Vendor`` requires choosing the ``User`` it belongs to
+    (``Vendor.user`` is a ``OneToOneField``), and there was no endpoint to choose
+    from — so the shop-owning half of the role hierarchy could not be administered
+    from the dashboard at all.
+
+    Two deliberate choices:
+
+    * ``IsManager``, not ``IsManagerOrReadOnly``. A vendor needs to read the shared
+      catalogue, but a vendor has no business enumerating the user table. This is
+      the one place where *reading* is itself a privilege.
+    * ``pagination_class = None``. This feeds a ``<select>``, and a paginated list
+      would silently offer only the first page of candidates — the same failure the
+      kit item lists had. It is a picker's body, not a browsable table.
+
+    ``?search=`` matches username, email and name. ``?unassigned=1`` returns only
+    users who do not already own a shop, which is what the create form wants:
+    ``OneToOneField`` means a second shop for the same user is a 400, so offering
+    that user at all would be offering a choice that cannot succeed.
+    """
+
+    serializer_class = AdminUserSerializer
+    permission_classes = [IsManager]
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = (
+            User.objects.select_related('profile')
+            .annotate(has_vendor=Exists(Vendor.objects.filter(user=OuterRef('pk'))))
+            .order_by('username')
+        )
+
+        term = (self.request.query_params.get('search') or '').strip()
+        if term:
+            qs = qs.filter(
+                Q(username__icontains=term)
+                | Q(email__icontains=term)
+                | Q(first_name__icontains=term)
+                | Q(last_name__icontains=term)
+            )
+
+        if self.request.query_params.get('unassigned') in ('1', 'true', 'True'):
+            qs = qs.filter(has_vendor=False)
+
+        return qs
 
 
 class ProfileView(APIView):

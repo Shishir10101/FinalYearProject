@@ -181,7 +181,7 @@ catalog settings (categories, delivery areas) · per-field validation on every f
 cd frontend        && npm run build      # must pass
 cd admin-dashboard && npm run build      # must pass
 cd backend         && venv/Scripts/python.exe manage.py check
-cd backend         && venv/Scripts/python.exe manage.py test    # 257 tests
+cd backend         && venv/Scripts/python.exe manage.py test    # 336 tests
 ```
 
 Live end-to-end checks (backend must be running on :8000):
@@ -194,8 +194,12 @@ cd backend && venv/Scripts/python.exe verify_day3c.py    # 128 assertions (full 
 cd backend && venv/Scripts/python.exe verify_day4.py     #  88 assertions (history, reset, validation)
 cd backend && venv/Scripts/python.exe verify_day6.py     #  40 assertions (the ritual entry point)
 cd backend && venv/Scripts/python.exe verify_day7.py     #  30 assertions (token revocation)
+cd backend && venv/Scripts/python.exe verify_day8.py     #  74 assertions (kit & ritual authoring)
+cd backend && venv/Scripts/python.exe verify_day9.py     #  49 assertions (vendor administration)
+cd backend && venv/Scripts/python.exe verify_day11.py    #  66 assertions (reviews & moderation)
 cd backend && venv/Scripts/python.exe manage.py purge_verification_orders   # clean up after
 cd backend && venv/Scripts/python.exe manage.py purge_verification_users
+cd backend && venv/Scripts/python.exe manage.py purge_verification_reviews
 ```
 
 Run the purge commands afterwards: the verifiers exercise the real checkout and
@@ -213,12 +217,31 @@ cd admin-dashboard && npx eslint --rule '{"no-undef":"error"}' src/
 
 No feature is complete until its build is clean and the flow has been exercised end to end.
 
-**Last verified:** 2026-09-19 — **257 unit tests + 450 live E2E assertions** passing, both
-frontends building clean (13/13 customer routes, 10/10 admin routes), authorization tests
-correct, and the database back to its seeded state (8 orders · 35 products · 10 categories ·
-3 areas · 1 vendor · 8 status events · 0 scratch rows) after purging.
+**Last verified:** 2026-09-21 — **336 unit tests + 641 live E2E assertions + 124 browser
+assertions** passing, both frontends building clean (14/14 customer pages, 13/13 admin
+pages), authorization tests correct, and the database back to its seeded state (8 orders ·
+35 products · 10 categories · 3 areas · 1 vendor · 7 kits · 8 rituals · 8 status events ·
+0 reviews · 0 scratch rows) after purging.
 
 The home page leads with the **festival calendar** — the next festival, its countdown, its
 kit (or a plain statement that there is no kit yet) and the required samagri — rather than a
 generic product grid.
+
+The admin dashboard can **author the whole domain**: products, categories, delivery areas,
+festival kits and rituals (including the samagri list behind each), and vendors — all from
+one shared editor. All three staff roles can log in; a vendor sees only its own catalogue.
+
+Two browser checks verify the apps in a real browser — `admin-dashboard/scripts/browser_check.mjs`
+and `frontend/scripts/storefront_check.mjs` — because a clean build and a green API suite
+cannot see a client-side render failure. Between them they have found five real bugs:
+**a vendor could not log into the dashboard at all**, **a full page load of `/checkout`
+bounced to `/cart`**, **a successful checkout sent the customer to an empty cart instead of
+the confirmation**, **the "My Orders" nav link pointed at a route that did not exist**, and
+**the product page refetched its reviews forever** — 537 requests in 12 seconds, invisible to
+the build, to ESLint, to 336 unit tests and to every live API assertion.
+
+Run them against a **production build**, and start the two frontends sequentially with an
+explicit port: under `next dev` the HMR websocket fails in a sandboxed shell and the client
+never hydrates, and two `next dev` servers started at once race for `:3000` and silently swap
+ports.
 
