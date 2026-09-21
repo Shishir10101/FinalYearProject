@@ -237,7 +237,33 @@ Tables for lists, cards for KPIs and alerts, modals for editing.
 **Accessibility:** modals set `role="dialog"` and `aria-modal`, close on `Escape`
 and backdrop click, lock body scroll, and label their close button. Search inputs
 carry `aria-label`. Icons that convey meaning are paired with text, and decorative
-ones (the placeholder lamp, the reason sparkle) are `aria-hidden`.
+ones (the placeholder lamp, the reason sparkle) are `aria-hidden`. The search result
+count is a `role="status"` live region, because it changes without a navigation and a
+screen reader would otherwise never learn that anything happened. Each page has
+**one** `<main>` landmark — the layout provides it, and pages must not nest another.
+
+### Search results (`/products?q=`) — the Samagri entry point
+
+Four states, and the first two are deliberately distinct:
+
+| State | Shown |
+|---|---|
+| Settled | Result count, a panel naming the rituals matched and the spellings tried, then the grid |
+| Too short | "**Keep typing** — type at least two characters and we will search the catalogue" |
+| No match, suggestions available | "**Nothing matches "…"** — did you mean one of these?" with clickable corrections |
+| No match, no suggestions | "No products found" + Clear Filters |
+
+Each card carries its **strongest match reason** in the same reason box the
+recommendations page uses, with a magnifier rather than the sparkle — a search hit is
+not a recommendation and should not be dressed as one. The reason is rendered verbatim
+from the API; the client never invents one.
+
+**Sorting is hidden while a query is active.** Relevance *is* the sort, and offering
+"Price: Low to High" on top of a ranked result set would silently discard the ranking
+while appearing to work.
+
+Searching does not break the sidebar: the category filter narrows the candidate set
+before ranking, so a shopper can search within a category.
 
 ### `ProductCard` — the single product tile
 There used to be three implementations and they had drifted: the home version

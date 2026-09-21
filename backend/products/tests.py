@@ -1,7 +1,7 @@
-"""Catalogue validation tests.
+"""Catalogue tests: validation, reviews, and domain-aware search.
 
-These cover gaps found while wiring per-field errors into the admin dashboard.
-Probing the live API for error *shapes* turned up three payloads that were
+The validation cases cover gaps found while wiring per-field errors into the admin
+dashboard. Probing the live API for error *shapes* turned up three payloads that were
 accepted when they should have been refused:
 
 * ``price: -5``  — a negative price subtracts from the cart total.
@@ -26,8 +26,12 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import UserProfile
 from core.permissions import ROLE_ADMIN, ROLE_CUSTOMER
+from festivals.models import FestivalKit, KitItem, Puja, PujaItem
 from orders.models import Order, OrderItem
 from .models import Area, Category, Product, Review
+from .search import (
+    PARTIAL_CODES, REASON_CODES, SYNONYMS, WEIGHTS, normalize, search_products,
+)
 
 
 def bearer(user):
@@ -579,3 +583,369 @@ class ReviewQueryCountTests(ReviewTestBase):
             # the summary were a SerializerMethodField this would be 3 + N, which is
             # the trap the ritual list carries a test for.
             client.get(url)
+
+
+# --- Domain-aware search ---------------------------------------------------
+#
+# `AGENTS.md` §1 lists Samagri as one of six discovery entry points, and search was
+# the weakest of them. Every case below is a real failure that was measured against
+# the seeded catalogue before `products/search.py` existed — not a hypothetical:
+# `sindur` returned 0 products, `pasni` and `griha pravesh` returned 0, and `diyo`
+# ranked "Cotton Wicks" above "Brass Diyo".
+#
+# These assert *ordering and explanation*, not response shape. A search that returns
+# the right products in the wrong order is still a broken search, and a result that
+# cannot say why it is there is indistinguishable from a random one.
+
+
+class SearchTestBase(TestCase):
+    """A miniature catalogue carrying the transliteration pairs that matter."""
+
+    def setUp(self):
+        self.category = Category.objects.create(name='Search Cat')
+        self.sindoor = self._product(
+            'Sindoor Powder (Red)', 'Pure vermillion powder for tika and ceremonies.')
+        self.diyo = self._product(
+            'Brass Diyo (Oil Lamp)', 'Traditional brass diyo for lighting during puja.')
+        self.oil = self._product(
+            'Mustard Oil for Diyo (500ml)', 'Cold pressed mustard oil for the diyo.')
+        self.wicks = self._product(
+            'Cotton Wicks (Batti) - 100pcs', 'Ready-made cotton wicks.')
+        self.dhoop = self._product('Loban Dhoop', 'Loban incense for daily puja.')
+        self.thali = self._product(
+            'Copper Puja Plate (Thali)', 'A plate for offerings.')
+        # Carries no "puja" in its name, and is reachable only through the thali/tray
+        # synonym group. That makes it the honest test of group isolation: the thali
+        # above matches "puja" legitimately, by name, and proves nothing either way.
+        self.tray = self._product('Copper Serving Tray', 'A tray for carrying offerings.')
+        self.agarbatti = self._product(
+            'Chandan Agarbatti', 'Sandalwood incense sticks.')
+        self.retired = self._product(
+            'Retired Sindoor', 'Withdrawn from sale.', is_active=False)
+
+        self.ritual = Puja.objects.create(
+            name='Pasni (Rice Feeding)', slug='pasni-rice-feeding',
+            description='The first-rice ceremony.', occasion_type='pasni')
+        PujaItem.objects.create(puja=self.ritual, product=self.sindoor,
+                                quantity=1, is_required=True)
+        PujaItem.objects.create(puja=self.ritual, product=self.oil,
+                                quantity=1, is_required=False)
+
+        self.kit = FestivalKit.objects.create(
+            name='Pasni (Rice Feeding) Kit', festival_type='pasni',
+            description='Everything for the ceremony.', puja=self.ritual)
+        KitItem.objects.create(kit=self.kit, product=self.wicks,
+                               quantity=1, is_required=True)
+
+    def _product(self, name, description, is_active=True):
+        return Product.objects.create(
+            name=name, description=description, price=Decimal('100'),
+            stock=10, category=self.category, is_active=is_active,
+        )
+
+    def search(self, query):
+        return search_products(Product.objects.filter(is_active=True), query)
+
+    def names(self, query):
+        scored, _ = self.search(query)
+        return [item.product.name for item in scored]
+
+    def first_name(self, query):
+        scored, _ = self.search(query)
+        return scored[0].product.name if scored else None
+
+    def codes_for(self, query, product_name):
+        scored, _ = self.search(query)
+        for item in scored:
+            if item.product.name == product_name:
+                return item.codes
+        return []
+
+
+class NormalizationTests(SearchTestBase):
+    """Folding is what makes two spellings of one word comparable."""
+
+    def test_normalize_lowercases_and_strips_punctuation(self):
+        self.assertEqual(normalize('  Sindoor  Powder (Red) '), 'sindoor powder red')
+
+    def test_normalize_folds_diacritics_to_ascii(self):
+        self.assertEqual(normalize('Tīl Öil'), 'til oil')
+
+    def test_normalize_treats_ampersand_as_and(self):
+        self.assertEqual(normalize('Spoon & Cup'), 'spoon and cup')
+
+    def test_the_plural_fold_matches_wicks_and_wick(self):
+        self.assertEqual(normalize('wicks').rstrip('s'), normalize('wick').rstrip('s'))
+
+    def test_a_short_token_cannot_match_a_longer_word(self):
+        # "ti" must not be credited with matching "til" — the floor is three
+        # characters. Without it, a two-letter query matches half the catalogue.
+        scored, _ = self.search('ti')
+        self.assertEqual(scored, [])
+
+
+class TransliterationTests(SearchTestBase):
+    """The failure that started this: a second spelling of a Nepali term."""
+
+    VARIANTS = (
+        ('sindur', 'Sindoor Powder (Red)'),
+        ('sindor', 'Sindoor Powder (Red)'),
+        ('sindhur', 'Sindoor Powder (Red)'),
+        ('vermillion', 'Sindoor Powder (Red)'),
+        ('deep', 'Brass Diyo (Oil Lamp)'),
+        ('deepak', 'Brass Diyo (Oil Lamp)'),
+        ('diya', 'Brass Diyo (Oil Lamp)'),
+        ('lamp', 'Brass Diyo (Oil Lamp)'),
+        ('thali', 'Copper Puja Plate (Thali)'),
+        ('tray', 'Copper Puja Plate (Thali)'),
+        ('incense', 'Chandan Agarbatti'),
+        ('agarbati', 'Chandan Agarbatti'),
+        ('dhup', 'Loban Dhoop'),
+    )
+
+    def test_every_alternative_spelling_finds_its_product(self):
+        for query, expected in self.VARIANTS:
+            with self.subTest(query=query):
+                self.assertIn(expected, self.names(query),
+                              f'“{query}” did not find “{expected}”')
+
+    def test_the_reason_names_the_spelling_the_catalogue_uses(self):
+        """A shopper who typed “sindur” is told the shop files it under “sindoor”."""
+        scored, _ = self.search('sindur')
+        reasons = ' '.join(scored[0].reasons)
+        self.assertIn('sindoor', reasons)
+        self.assertIn('sindur', reasons)
+
+    def test_expansion_reports_every_spelling_it_tried(self):
+        _, meta = self.search('sindur')
+        for spelling in ('sindur', 'sindoor', 'sindor', 'sindhur'):
+            self.assertIn(spelling, meta['expanded_terms'])
+
+
+class SynonymIsolationTests(SearchTestBase):
+    """A synonym group must not leak into an unrelated word.
+
+    Both of these were real bugs in the first implementation, which built its index
+    by splitting multi-word group members into their component words. That registered
+    ``puja`` as a synonym of ``thali`` (from the member "puja plate") and ``batti`` as
+    a synonym of ``dhoop`` (from "dhoop batti") — so searching "puja" returned plates,
+    and searching "dhup" returned *Cotton Wicks*.
+    """
+
+    def test_a_group_member_does_not_become_a_synonym_of_its_own_words(self):
+        self.assertNotIn('thali', SYNONYMS.get('puja', frozenset()))
+        self.assertNotIn('plate', SYNONYMS.get('puja', frozenset()))
+
+    def test_puja_does_not_reach_a_tray_that_never_mentions_it(self):
+        # The tray is in the thali/tray/plate group, so the leak this guards against
+        # would surface it for "puja" even though neither its name nor its description
+        # contains the word.
+        self.assertNotIn('Copper Serving Tray', self.names('puja'))
+
+    def test_the_group_still_works_from_either_direction(self):
+        # Isolation must not come at the cost of the feature: the tray is reachable
+        # by every spelling in its group.
+        for query in ('tray', 'thali', 'plate'):
+            with self.subTest(query=query):
+                self.assertIn('Copper Serving Tray', self.names(query))
+
+    def test_dhup_does_not_return_cotton_wicks(self):
+        self.assertNotIn('Cotton Wicks (Batti) - 100pcs', self.names('dhup'))
+
+    def test_a_multi_word_member_still_matches_as_a_phrase(self):
+        # "puja plate" is a member of the thali group, so it must still find the
+        # thali — the fix is that it matches as a phrase, not that it stops working.
+        self.assertEqual(self.first_name('puja plate'), 'Copper Puja Plate (Thali)')
+
+
+class RankingTests(SearchTestBase):
+    """The product itself must outrank one that merely mentions it."""
+
+    def test_the_object_ranks_above_a_product_named_after_it(self):
+        # "Mustard Oil for Diyo" contains "diyo"; "Brass Diyo" *is* a diyo. Both match
+        # every token, so only position separates them.
+        self.assertEqual(self.first_name('diyo'), 'Brass Diyo (Oil Lamp)')
+        self.assertLess(self.names('diyo').index('Brass Diyo (Oil Lamp)'),
+                        self.names('diyo').index('Mustard Oil for Diyo (500ml)'))
+
+    def test_an_exact_name_beats_a_prefix_match(self):
+        self.assertEqual(self.first_name('sindoor'), 'Sindoor Powder (Red)')
+
+    def test_a_name_match_beats_a_description_only_match(self):
+        # "Loban Dhoop" is named for it; the wicks merely mention diyo in a sentence.
+        names = self.names('dhoop')
+        self.assertEqual(names[0], 'Loban Dhoop')
+
+    def test_the_position_reason_is_recorded(self):
+        self.assertIn('name_position', self.codes_for('diyo', 'Brass Diyo (Oil Lamp)'))
+
+    def test_ordering_is_deterministic_across_runs(self):
+        self.assertEqual(self.names('puja'), self.names('puja'))
+        self.assertEqual(self.names('diyo'), self.names('diyo'))
+
+
+class DomainSearchTests(SearchTestBase):
+    """Searching a ritual by name must find the samagri it needs.
+
+    No product is named after a ritual — the link lives in `PujaItem` / `KitItem`.
+    Before this, `pasni` returned nothing at all, although it is a seeded ritual with
+    a complete kit behind it.
+    """
+
+    def test_a_ritual_name_finds_its_required_samagri(self):
+        self.assertIn('Sindoor Powder (Red)', self.names('pasni'))
+
+    def test_a_ritual_name_finds_its_kits_samagri_too(self):
+        self.assertIn('Cotton Wicks (Batti) - 100pcs', self.names('pasni'))
+
+    def test_the_ritual_is_reported_back(self):
+        _, meta = self.search('pasni')
+        kinds = {entry['kind'] for entry in meta['matched_domains']}
+        self.assertIn('ritual', kinds)
+        self.assertIn('kit', kinds)
+        names = [entry['name'] for entry in meta['matched_domains']]
+        self.assertIn('Pasni (Rice Feeding)', names)
+
+    def test_the_domain_reason_is_recorded(self):
+        codes = self.codes_for('pasni', 'Sindoor Powder (Red)')
+        self.assertIn('domain_required', codes)
+
+    def test_a_required_item_outranks_an_optional_one(self):
+        required = self.codes_for('pasni', 'Sindoor Powder (Red)')
+        optional = self.codes_for('pasni', 'Mustard Oil for Diyo (500ml)')
+        self.assertIn('domain_required', required)
+        self.assertIn('domain_optional', optional)
+
+    def test_a_multi_word_ritual_name_works(self):
+        ritual = Puja.objects.create(
+            name='Griha Pravesh', slug='griha-pravesh',
+            description='Housewarming.', occasion_type='griha_pravesh')
+        PujaItem.objects.create(puja=ritual, product=self.thali,
+                                quantity=1, is_required=True)
+        self.assertIn('Copper Puja Plate (Thali)', self.names('griha pravesh'))
+
+    def test_a_name_the_catalogue_qualifies_still_matches(self):
+        # The ritual is "Pasni (Rice Feeding)", not "Pasni" — the query is a subset
+        # of the name's words, not a substring of it.
+        _, meta = self.search('pasni')
+        self.assertTrue(meta['matched_domains'])
+
+    def test_an_inactive_ritual_is_not_matched(self):
+        self.ritual.is_active = False
+        self.ritual.save()
+        self.assertNotIn('Sindoor Powder (Red)', self.names('pasni'))
+
+
+class SearchSafetyTests(SearchTestBase):
+    """Edge cases that must not produce confident nonsense."""
+
+    def test_an_inactive_product_is_never_returned(self):
+        self.assertNotIn('Retired Sindoor', self.names('sindoor'))
+
+    def test_an_empty_query_is_flagged_and_returns_nothing(self):
+        scored, meta = self.search('')
+        self.assertEqual(scored, [])
+        self.assertTrue(meta['too_short'])
+
+    def test_a_one_character_query_is_flagged_rather_than_searched(self):
+        scored, meta = self.search('s')
+        self.assertEqual(scored, [])
+        self.assertTrue(meta['too_short'])
+
+    def test_nonsense_returns_nothing_and_is_not_flagged_as_short(self):
+        scored, meta = self.search('xyzzy')
+        self.assertEqual(scored, [])
+        self.assertFalse(meta['too_short'])
+
+    def test_a_typo_is_offered_a_suggestion(self):
+        _, meta = self.search('sindoer')
+        self.assertIn('sindoor', meta['suggestions'])
+
+    def test_no_suggestion_is_offered_when_something_matched(self):
+        _, meta = self.search('sindoor')
+        self.assertEqual(meta['suggestions'], [])
+
+    def test_every_result_explains_itself(self):
+        for query in ('sindoor', 'diyo', 'pasni', 'puja', 'thali'):
+            for item in self.search(query)[0]:
+                with self.subTest(query=query, product=item.product.name):
+                    self.assertTrue(item.reasons,
+                                    f'{item.product.name} matched “{query}” with no reason')
+                    self.assertTrue(item.codes)
+
+    def test_every_emitted_reason_code_is_declared(self):
+        """A code the scorer can emit but the module does not declare is a typo."""
+        for query in ('sindoor', 'diyo', 'pasni', 'puja', 'thali', 'puja plate'):
+            for item in self.search(query)[0]:
+                for code in item.codes:
+                    with self.subTest(code=code):
+                        self.assertIn(code, REASON_CODES)
+
+    def test_every_non_partial_code_has_a_weight_behind_it(self):
+        """A code with no weight behind it means a score nobody can trace.
+
+        The ``*_partial`` tiers are exempt by design: they are a base plus a span
+        scaled by coverage, so there is no single constant to point at. Everything
+        else must map 1:1 onto WEIGHTS, which is what makes a score decomposable
+        back into the reasons shown to the shopper.
+        """
+        for code in REASON_CODES - PARTIAL_CODES:
+            with self.subTest(code=code):
+                self.assertIn(code, WEIGHTS)
+
+
+class SearchAPITests(SearchTestBase):
+    """The endpoint: public, paginated, and carrying the explanation."""
+
+    URL = '/api/products/search/'
+
+    def test_search_is_public(self):
+        response = APIClient().get(self.URL, {'q': 'sindoor'})
+        self.assertEqual(response.status_code, 200)
+
+    def test_the_response_carries_the_match_block(self):
+        response = APIClient().get(self.URL, {'q': 'sindoor'})
+        row = response.data['results'][0]
+        self.assertIn('match', row)
+        self.assertIn('reasons', row['match'])
+        self.assertIn('score', row['match'])
+
+    def test_the_response_carries_the_query_it_understood(self):
+        response = APIClient().get(self.URL, {'q': 'sindur'})
+        self.assertEqual(response.data['normalized_query'], 'sindur')
+        self.assertIn('sindoor', response.data['expanded_terms'])
+
+    def test_search_is_paginated_and_pages_do_not_overlap(self):
+        # "puja" matches most of this fixture catalogue, so it spans pages.
+        for i in range(20):
+            self._product(f'Puja Item {i}', 'A puja samagri.')
+        first = APIClient().get(self.URL, {'q': 'puja', 'page': 1})
+        second = APIClient().get(self.URL, {'q': 'puja', 'page': 2})
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        ids_first = {row['id'] for row in first.data['results']}
+        ids_second = {row['id'] for row in second.data['results']}
+        self.assertTrue(ids_first)
+        self.assertTrue(ids_second)
+        self.assertFalse(ids_first & ids_second, 'page 1 and page 2 share rows')
+        self.assertIsNotNone(first.data['next'])
+
+    def test_the_alias_parameter_works_too(self):
+        by_q = APIClient().get(self.URL, {'q': 'sindoor'})
+        by_search = APIClient().get(self.URL, {'search': 'sindoor'})
+        self.assertEqual(by_q.data['count'], by_search.data['count'])
+
+    def test_an_unknown_term_is_an_empty_200_not_a_404(self):
+        response = APIClient().get(self.URL, {'q': 'xyzzy'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 0)
+
+    def test_a_missing_query_is_an_empty_200(self):
+        response = APIClient().get(self.URL)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['too_short'])
+
+    def test_a_short_query_is_told_to_keep_typing_rather_than_shown_no_results(self):
+        response = APIClient().get(self.URL, {'q': 's'})
+        self.assertTrue(response.data['too_short'])
+        self.assertEqual(response.data['count'], 0)

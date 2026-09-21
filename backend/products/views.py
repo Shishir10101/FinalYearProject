@@ -10,6 +10,7 @@ from .serializers import (
     ProductAdminSerializer, CategoryAdminSerializer,
     ReviewSerializer, ReviewWriteSerializer, ReviewAdminSerializer,
 )
+from .search import search_products
 from core.permissions import (
     IsStaffRole, IsManagerOrReadOnly, IsManager, is_manager, is_vendor, vendor_for,
     promote_to_vendor,
@@ -58,6 +59,70 @@ class ProductListView(generics.ListAPIView):
     filterset_fields = ['category', 'is_featured']
     search_fields = ['name', 'description']
     ordering_fields = ['price', 'popularity_score', 'created_at', 'name']
+
+
+class ProductSearchView(generics.GenericAPIView):
+    """Domain-aware samagri search — the sixth discovery entry point.
+
+    ``AGENTS.md`` §1 lists Samagri as one of six ways into the catalogue, and search
+    was the weakest of them: plain ``icontains`` over name and description. It could
+    not handle a second spelling of a Nepali term ("sindur" found nothing), and it
+    could not search the *domain* at all — "pasni" and "griha pravesh" are seeded
+    rituals with complete kits, and both returned zero products, because no product
+    is named after a ritual.
+
+    This endpoint is deliberately separate from ``?search=`` on the list endpoints.
+    That parameter stays as it is: the dashboard's item picker depends on it and
+    wants a plain substring match over one vendor's stock, which is a different job
+    from ranking a shopper's query. It also keeps the extra ``match`` block — the
+    per-product reasons — out of every ordinary list response.
+
+    ``?q=`` is the documented parameter; ``?search=`` is accepted as an alias so a
+    caller who guesses the other one still gets results.
+    """
+
+    serializer_class = ProductListSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        query = (request.query_params.get('q')
+                 or request.query_params.get('search')
+                 or '').strip()
+
+        queryset = Product.objects.filter(is_active=True)
+
+        # The storefront's sidebar filter has to keep working while a query is
+        # active, so the category narrows the candidate set before ranking rather
+        # than being ignored. Checked for digits first: `category_id='abc'` raises
+        # ValueError inside the ORM and would surface as a 500.
+        category = request.query_params.get('category')
+        if category and str(category).isdigit():
+            queryset = queryset.filter(category_id=int(category))
+
+        scored, meta = search_products(queryset, query)
+
+        context = self.get_serializer_context()
+        paginator = self.paginator
+        page = paginator.paginate_queryset(scored, request, view=self)
+        rows = page if page is not None else scored
+
+        results = []
+        for item in rows:
+            row = dict(ProductListSerializer(item.product, context=context).data)
+            # Why this product is here, in the shape the recommender already uses:
+            # machine-readable codes for tests, a human sentence for the UI.
+            row['match'] = item.as_match()
+            results.append(row)
+
+        # Built by hand rather than via `get_paginated_response` so the query meta
+        # sits alongside the page envelope instead of being bolted onto the end.
+        payload = dict(meta)
+        payload['count'] = (paginator.page.paginator.count
+                            if page is not None else len(scored))
+        payload['next'] = paginator.get_next_link() if page is not None else None
+        payload['previous'] = paginator.get_previous_link() if page is not None else None
+        payload['results'] = results
+        return Response(payload)
 
 
 class ProductDetailView(generics.RetrieveAPIView):

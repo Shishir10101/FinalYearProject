@@ -203,22 +203,83 @@ def test_privacy(product):
 
 # ---------------------------------------------------------------- verified purchase
 
-def test_verified_purchase(product, customer):
+def test_verified_badge_is_read_only(product, manager, reviewer):
+    """A manager must not be able to rewrite whether somebody had bought it.
+
+    Deliberately run **before** the purchase section, and as the second reviewer,
+    because that is the only point at which this script owns a review whose badge it
+    knows is false. Afterwards the same reviewer's badge is legitimately true, and
+    asserting "not True" against an already-true badge proves nothing — the write
+    could be honoured and the check would still fail.
+
+    Both failure modes were observed, in this order: the check first passed for the
+    wrong reason (it picked whichever review happened to be handy), and then failed
+    outright once the account it borrowed a review from turned out to have ordered the
+    product. A guard that cannot detect the thing it exists to detect is worse than no
+    guard, because it reads as coverage.
+    """
+    section('The verified badge is read-only to a manager')
+
+    slug = product['slug']
+    status, body = request('GET', reviews_url(slug), reviewer)
+    check('the reviewer has a review of their own to work with',
+          status == 200 and bool(body.get('mine')), f'status={status} body={body}')
+    if status != 200 or not body.get('mine'):
+        return
+
+    review_id = body['mine']['id']
+    check('and its badge is false, so a rewrite would be visible',
+          body['mine']['is_verified_purchase'] is False,
+          f"verified={body['mine']['is_verified_purchase']}")
+
+    status, updated = request('PATCH', f'/api/products/admin/reviews/{review_id}/',
+                              manager, {'is_verified_purchase': True})
+    check('a manager attempting the rewrite gets a 200, not an error',
+          status == 200, f'status={status}')
+    check('but the badge did not move',
+          updated.get('is_verified_purchase') is False,
+          f'after={updated.get("is_verified_purchase")!r}')
+
+    status, admin_list = request('GET', '/api/products/admin/reviews/', manager)
+    check('and it is still false on a re-read',
+          next((r['is_verified_purchase'] for r in (admin_list or [])
+                if r['id'] == review_id), None) is False,
+          'the write landed after all')
+
+
+def test_verified_purchase(product, buyer):
+    """The badge means "this account had ordered this product before reviewing".
+
+    It runs as the **second** reviewer — a throwaway account this script registered,
+    which has never ordered anything — and not as `testuser`.
+
+    That is not incidental. The first assertion is "the badge is false before any
+    order", which is a statement about that account's order history, so the script
+    has to own the history it is asserting about. It did not, and the check failed the
+    first time this suite was run after the storefront browser check: that harness
+    buys the most popular product, `testuser` already had an order for it, and the
+    badge was legitimately true. The feature was right and the verifier was wrong.
+
+    Using the second reviewer also keeps the review count stable — their existing
+    review is deleted and re-posted, so the sections below still see the two reviews
+    they expect.
+    """
     section('The verified-purchase badge reflects a real order')
 
     slug = product['slug']
     before = None
-    status, body = request('GET', reviews_url(slug), customer)
+    status, body = request('GET', reviews_url(slug), buyer)
     if status == 200 and body.get('mine'):
         before = body['mine']['is_verified_purchase']
-    check('the badge is false before any order', before is False, f'before={before}')
+    check('the badge is false for an account that has never ordered it',
+          before is False, f'before={before}')
 
     # Buy the product.
-    status, _ = request('POST', '/api/orders/cart/add/', customer,
+    status, _ = request('POST', '/api/orders/cart/add/', buyer,
                         {'product_id': product['id'], 'quantity': 1})
     check('the product can be added to the cart', status in (200, 201), f'status={status}')
 
-    status, order = request('POST', '/api/orders/checkout/', customer, {
+    status, order = request('POST', '/api/orders/checkout/', buyer, {
         'shipping_address': 'Ward 4, Jhamsikhel',
         'shipping_city': 'lalitpur',
         'phone': '9800000000',
@@ -231,18 +292,18 @@ def test_verified_purchase(product, customer):
 
     # Re-post the review: it is an edit, and the badge is NOT recomputed, so this
     # proves the snapshot behaviour as well as the happy path.
-    request('POST', reviews_url(slug), customer, {
+    request('POST', reviews_url(slug), buyer, {
         'rating': 5, 'title': 'Bought it, loved it', 'body': PROBE_BODY,
     })
-    status, body = request('GET', reviews_url(slug), customer)
+    status, body = request('GET', reviews_url(slug), buyer)
     check('the badge is still false on an edit — it is a snapshot, not a live lookup',
           body['mine']['is_verified_purchase'] is False,
           f"verified={body['mine']['is_verified_purchase']}")
 
     # A fresh review by the same customer cannot exist (unique_together), so the
     # snapshot is checked by deleting and re-posting.
-    request('DELETE', f"/api/products/reviews/{body['mine']['id']}/", customer)
-    status, fresh = request('POST', reviews_url(slug), customer, {
+    request('DELETE', f"/api/products/reviews/{body['mine']['id']}/", buyer)
+    status, fresh = request('POST', reviews_url(slug), buyer, {
         'rating': 5, 'title': 'Bought it, loved it', 'body': PROBE_BODY,
     })
     check('a new review after the purchase is accepted', status == 201, f'status={status}')
@@ -292,27 +353,6 @@ def test_moderation(product, customer, manager):
           any(r['id'] == target['id'] for r in
               (request('GET', '/api/products/admin/reviews/', manager)[1] or [])),
           'the manager lost sight of what they hid')
-
-    # The badge must be read-only, or a manager could rewrite history.
-    #
-    # The probe has to start from a review whose badge is **false**. Picking any review
-    # and asserting "not True" afterwards proves nothing when the badge was already True
-    # — the write could have been honoured and the check would still fail. So find an
-    # unverified review, try to verify it, and confirm it did not move.
-    unverified = next((r for r in all_reviews if not r['is_verified_purchase']), None)
-    check('there is an unverified review to attempt the rewrite on',
-          unverified is not None, f'reviews={[(r["id"], r["is_verified_purchase"]) for r in all_reviews]}')
-    if unverified is not None:
-        status, updated = request('PATCH', f"/api/products/admin/reviews/{unverified['id']}/",
-                                  manager, {'is_verified_purchase': True})
-        check('the verified badge cannot be rewritten by a manager',
-              updated.get('is_verified_purchase') is False,
-              f'before=False after={updated.get("is_verified_purchase")!r} updated={updated}')
-        check('and the badge is still false on a re-read',
-              next((r['is_verified_purchase'] for r in
-                    (request('GET', '/api/products/admin/reviews/', manager)[1] or [])
-                    if r['id'] == unverified['id']), None) is False,
-              'the write landed after all')
 
     # Unhide — hiding must not be a one-way door.
     request('PATCH', f"/api/products/admin/reviews/{target['id']}/", manager,
@@ -419,7 +459,13 @@ def main():
     test_public_read(product, customer)
     test_write(product, customer, other)
     test_privacy(product)
-    test_verified_purchase(product, customer)
+    # Both of these run as the second reviewer, and the order matters: the badge is
+    # only known to be false *before* that account has bought anything. See their
+    # docstrings — running them the other way round is how both checks first went
+    # wrong. As `testuser` they would also be asserting about an order history this
+    # script does not own.
+    test_verified_badge_is_read_only(product, manager, other)
+    test_verified_purchase(product, other)
     test_moderation(product, customer, manager)
     test_product_detail_summary(product, customer)
     test_cleanup(product, customer, manager)

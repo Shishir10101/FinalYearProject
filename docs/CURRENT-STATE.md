@@ -2,8 +2,95 @@
 
 Analysis date: 2026-09-18
 Method: full source inspection + live server probing.
-Last updated: 2026-09-21 (**Day 11 complete** — reviews, verification and docs all done.
-Days 10 and earlier are complete.)
+Last updated: 2026-09-21 (**Day 12 complete** — domain-aware search. Days 11 and earlier are
+complete.)
+
+---
+
+## Day 12 Completed (2026-09-21) — the Samagri entry point, rebuilt
+
+**Theme:** `AGENTS.md` §1 requires discovery through **six** entry points, and **Samagri** —
+search — was the weakest of them. It was DRF's `SearchFilter` with
+`search_fields = ['name', 'description']`, which is to say `icontains`. Three failures, all
+measured against the seeded catalogue before anything was written:
+
+| Failure | Evidence |
+|---|---|
+| **Transliteration** | `sindur` returned **0** products (the product is "Sindoor Powder"). Same for `dhup`, `deep`, `karpoor`, `sankha`, `nariyal`, `agarbati` — seven zero-result queries, each a spelling a shopper would plausibly type. |
+| **The domain was not searchable** | `pasni` returned **0**, `griha pravesh` **0**, `bratabandha` **1** (a description match). `pasni` and `griha pravesh` are seeded rituals with complete kits — no product is named after a ritual, so a substring match over `Product.name` could not see the `PujaItem` / `KitItem` link at all. |
+| **No ranking** | Results came back in `-popularity_score` order, so `diyo` ranked *Cotton Wicks* and *Pure Cow Ghee* above **Brass Diyo (Oil Lamp)**. |
+
+**Verification: 379 unit tests + 727 live assertions + 143 browser assertions.**
+
+| # | Piece | Status |
+|---|-------|--------|
+| 1 | `products/search.py` — normalisation, synonym groups, the domain index, tiered scoring, suggestions | **DONE** |
+| 2 | `GET /api/products/search/?q=` — ranked, explainable, paginated, `?category=` aware | **DONE** |
+| 3 | 41 unit tests, asserting ordering and explanation rather than shape | **DONE** — 379 total |
+| 4 | `verify_day12.py` — 84 live assertions | **DONE** |
+| 5 | Storefront search surface — shareable URL, match reasons, suggestions, "keep typing" | **DONE** |
+| 6 | Catalogue paging — "Show more" walks `?page=` | **DONE** — it showed 12 of 35 and implied that was all |
+| 7 | 19 new browser assertions | **DONE** — storefront 60 → 79 |
+| 8 | `docs/SEARCH.md` + `FEATURES.md`, `API-SPEC.md`, `AGENTS.md`, `README.md` | **DONE** |
+
+### The bug inside the bug: two ranking defects my own smoke test exposed
+
+Both came from building the synonym index by splitting multi-word group members into their
+component words — which looks harmless and is not:
+
+- the group `('thali', 'plate', 'puja plate', 'tray')` registered **`puja` as a synonym of
+  `thali`**, so searching "puja" returned plates and trays;
+- the group `('dhoop', 'dhup', 'dhoop batti')` registered **`batti`**, so "dhup" returned
+  *Cotton Wicks*.
+
+A third: the phrase variant "oil lamp" was credited at the position of its first word, so
+*"Mustard Oil for Diyo"* collected an early-match bonus it had not earned and stayed above
+*Brass Diyo*. Fixed by never splitting group members, matching multi-word members as phrases,
+and scoring position from single-word variants only. `SynonymIsolationTests` guards all three.
+
+> None of this would have surfaced from reading the code. It surfaced from printing the top
+> three results for twenty queries and looking at them.
+
+### The frontend trap worth remembering
+
+**`router.replace()` is a no-op when only a search-param *value* changes** on a statically
+prerendered route. Measured on `/products`: `/products` → `/products?q=pasni` worked, but
+replacing `?q=sindoer` with `?q=sindoor` produced no RSC request and no URL change at all — the
+page showed results for "sindoor" while the address bar still read "sindoer". The no-query case
+working is exactly what made it look fine. Client-side filter state now uses
+`window.history.replaceState`, the documented way to update search params from a Client
+Component.
+
+Also fixed on the way through: `ToastContext` was handing out **unstable callbacks**
+(`success`/`error`/`info` as bare arrows in an inline object literal) — the same
+`useCallback`-dependency hazard that caused the Day 11 fetch loop, fixed at the root so no
+consumer has to remember. And the products page nested a `<main>` inside the layout's `<main>`:
+invalid HTML, and ambiguous for a screen reader.
+
+### Two verifier defects in `verify_day11.py`, found by running it in a normal order
+
+The Day 11 verifier had never been run *after* the storefront browser check. Doing so failed
+two checks — and both were the verifier's fault:
+
+- It asserted "the verified-purchase badge is false before any order" about `testuser`.
+  `testuser` already had an order for that product, because the browser check buys the most
+  popular one. **The feature was right; the verifier was asserting about an order history it
+  did not own.** Both badge checks now run as a throwaway account the script registers itself,
+  and in the order that makes the badge known to be false.
+- The read-only-badge check borrowed whichever review was handy, including one whose badge was
+  already `True` — so it could not have detected the regression it exists for. It now runs
+  before the purchase, on a review this script owns.
+
+`verify_day11.py` is now order-independent: **68/68 twice in a row with leftover state.** The
+general rule is written into `AGENTS.md` §12.
+
+### Resume with
+
+```bash
+cd backend && ./venv/Scripts/python.exe manage.py test        # 379 tests, all green
+./venv/Scripts/python.exe manage.py runserver 127.0.0.1:8000
+./venv/Scripts/python.exe verify_day12.py                     # 84 assertions
+```
 
 ---
 
@@ -1535,7 +1622,8 @@ Grouped by whether it blocks the demo.
 - Per-vendor and per-area analytics.
 - ~~Personalized recommendations from purchase history.~~ ✅ **BUILT Day 2**.
 - An image-upload widget — kits and products have an `image` column and no UI sets it.
-- Search relevance: `icontains` only, no fuzzy or typo tolerance.
+- ~~Search relevance: `icontains` only, no fuzzy or typo tolerance.~~ ✅ **BUILT Day 12** —
+  relevance-ranked, transliteration-aware, domain-aware. See §Day 12.
 
 **P2:**
 - Payment gateway integration (the mock in `CheckoutView` marks esewa/khalti as `paid`
@@ -1685,7 +1773,7 @@ boundary were re-verified. Authorization was **not** weakened at any point.
 | Wishlist | ⬜ Open |
 | Image upload widget (kits + products have the column, no UI) | ⬜ Open |
 | Vendor / per-area analytics | ⬜ Open |
-| Search relevance — `icontains` only, no fuzzy matching | ⬜ Open |
+| ~~Search relevance — `icontains` only, no fuzzy matching~~ | ✅ **Done Day 12** — see §Day 12. Remaining limits listed honestly in `docs/SEARCH.md` §7 |
 
 ### P2
 Live payment gateways · notifications · advanced analytics · extra animation work.

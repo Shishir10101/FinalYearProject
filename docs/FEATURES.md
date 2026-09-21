@@ -30,7 +30,7 @@ e-commerce. Five first-class concepts exist that a generic shop would not have:
 | Category | `/products` sidebar |
 | Festival | `/festivals` · the home-page calendar |
 | **Puja (ritual)** | **`/pujas` · `/pujas/<slug>`** |
-| Samagri | Search + the recommender's `staple_samagri` signal |
+| Samagri | **`/products?q=`** — domain-aware search (`docs/SEARCH.md`) + the recommender's `staple_samagri` signal |
 | Ready-made Kit | `/festivals` kit grid · add-whole-kit |
 
 **Puja was missing until Day 6** — no model, endpoint or page. The `festival_type`
@@ -56,7 +56,7 @@ normal case rather than an edge one.
 | Category browse | ✅ | 10 seeded categories |
 | Product detail | ✅ | By slug; shows category, vendor, unit, stock state |
 | **Ratings and reviews** | ✅ | Average + 5-to-1 distribution, the review list, and write/edit/delete for your own. See §2.5 |
-| Search | ✅ | By name and description (DRF `SearchFilter`) |
+| **Search** | ✅ | **Rebuilt Day 12** — relevance-ranked, transliteration-aware, reaches the samagri behind a ritual or festival name. See §2.6 |
 | Sort | ✅ | Price / stock / popularity |
 | Festival browse | ✅ | 7 kits; the type filter is derived from the kits, not hardcoded |
 | Festival calendar | ✅ | Soonest-first, `?limit=` up to 50 |
@@ -138,6 +138,33 @@ See `docs/AI-RECOMMENDATION.md`.
 afterwards. Every review being invisible until somebody looks is indistinguishable from the
 feature not working, on a demo with nobody on duty. Hide is reversible; the delete dialog
 says so and points at it.
+
+### 2.6 Samagri search — *rebuilt Day 12*
+
+The sixth discovery entry point, and the one that was weakest. Full detail in
+`docs/SEARCH.md`.
+
+| Feature | Status | Notes |
+|---|---|---|
+| Relevance ranking | ✅ | Name match tier, then position within the name, then popularity as a tie-break only |
+| Transliteration | ✅ | `sindur` finds *Sindoor Powder*; `deep` finds *Brass Diyo*; `karpoor` finds *Camphor (Kapur)* |
+| **Search by ritual or festival name** | ✅ | `pasni` returns the 9 samagri of the ritual and its kit — none of them named after it |
+| Required vs optional | ✅ | The reason says *Required for Pasni (rice-feeding ritual)* or *Optional extra for … (kit)* |
+| Every result explains itself | ✅ | A machine-readable code and a human sentence per match, rendered on the card |
+| Alternative spellings reported | ✅ | "Also searched for sindhur, sindoor, sindor, vermilion" |
+| "Did you mean" on a typo | ✅ | Clickable suggestions drawn from the catalogue's own vocabulary |
+| "Keep typing" vs "no match" | ✅ | Two different messages, because they are two different things |
+| Shareable search URL | ✅ | `/products?q=sindur` loads directly |
+| Category filter during search | ✅ | Narrows the candidate set before ranking |
+| Catalogue paging | ✅ | "Show more" walks `?page=`; it used to show 12 of 35 with nothing saying so |
+
+**What it replaced, measured.** `sindur`, `dhup`, `deep`, `karpoor`, `sankha`, `nariyal` and
+`agarbati` all returned **zero** products; `pasni` and `griha pravesh` returned **zero**
+although both are seeded rituals with complete kits; and `diyo` ranked *Cotton Wicks* above
+*Brass Diyo (Oil Lamp)*.
+
+> `?search=` on the list endpoints is **unchanged** — the dashboard's item picker depends on
+> it and wants a plain substring match over one vendor's stock, which is a different job.
 
 ---
 
@@ -287,11 +314,23 @@ Honest list of gaps, so nothing here is mistaken for finished work.
 | Kit / ritual editor UI | ✅ | **Built on Day 8** — kits and rituals are fully authorable, including their item lists |
 | Email / SMS notifications | ❌ | Reset mail sends (console backend in dev); no order notifications |
 | Real sales data | ❌ | Forecast trains on synthetic data; order volume is too low to train on |
-| Search relevance tuning | ⚠️ | `icontains` matching; no fuzzy or typo tolerance |
+| Search relevance tuning | ✅ | **Rebuilt Day 12** — see §2.6. Remaining gaps are listed honestly in `docs/SEARCH.md` §7 |
 | Image upload UI | ⚠️ | Kits and products have an `image` column, but no upload widget in either dashboard screen — `image` is deliberately not in the kit write payload |
 | Order history for pre-Day-4 orders | ⚠️ | Backfilled with a single event, so their earlier steps show "not recorded" rather than an invented time |
 | Festival-specific kits | ⚠️ | 3 of the 6 soonest festivals have no kit (Ganesh Chaturthi, Haritalika Teej, Indra Jatra). The home page says so plainly and routes to the recommender |
 | Linking a kit to a ritual from the ritual side | ⚠️ | By design: the FK is on the kit (`FestivalKit.puja`), because a kit declares which ritual it serves and one ritual may have several bundles. The kits page sets it; the rituals page reports it read-only |
+
+### Fixed on Day 12 (2026-09-21)
+
+| Issue | Detail |
+|---|---|
+| **The Samagri entry point could not spell.** Seven common transliterations returned zero products | `sindur`, `dhup`, `deep`, `karpoor`, `sankha`, `nariyal` and `agarbati` all returned **0**. See §2.6 and `docs/SEARCH.md`. |
+| **Two seeded rituals returned nothing when searched by name** | `pasni` and `griha pravesh` returned **0** products, although both have a complete kit. No product is named after a ritual, so a substring match over `Product.name` could not see the `PujaItem` / `KitItem` link at all. |
+| **`diyo` ranked *Cotton Wicks* above *Brass Diyo (Oil Lamp)*** | Results came back in `-popularity_score` order, not by how well they matched. Fixed with a name-position signal; popularity is now a tie-break only. |
+| **The catalogue showed 12 of 35 products and implied that was all of them** | The page fetched page 1 and rendered it as the whole catalogue. Same trap as the dashboard's item editor: a silent truncation that looks correct. Now a "Show more" that walks `?page=` and says how many are left. |
+| **`ToastContext` re-created its callbacks on every render** | `success`/`error`/`info` were bare arrow functions in an inline object literal. Any consumer that put `error` in a `useCallback` dependency list would re-create its own callback on every render and re-fire the effect that depends on it — the same unbounded loop that hit the reviews section on Day 11. Fixed at the root, with `useCallback` and a memoised value. |
+| **The products page nested a `<main>` inside the layout's `<main>`** | Invalid HTML, and ambiguous for a screen reader — "go to main content" stopped having one answer. Now a `<div>`. |
+| **A plain function named `useSuggestion`** | The `use` prefix made ESLint treat it as a React hook, so calling it from a click handler was a `rules-of-hooks` error. Caught by lint; renamed. |
 
 ### Fixed on Day 11 (2026-09-21)
 
@@ -438,6 +477,17 @@ The path that works end to end today.
     goes back to "No reviews yet"
 31. admin :3001 → **Reviews** → Hide a review, then reload the storefront page: it is
     gone and the average has moved. Show it again
+32. Products → search **`sindur`** (not "sindoor"): it finds Sindoor Powder and the card
+    says *matched on the alternative spelling "sindur" → "sindoor"*
+33. Search **`pasni`** — a ritual, not a product. Nine samagri come back, each card saying
+    *Required for Pasni (Rice Feeding)*, and the page names the ritual it matched
+34. Search **`diyo`**: the lamps rank above "Mustard Oil for Diyo", and above the wicks
+    that merely mention it in a description
+35. Search **`sindoer`** (a typo): "Did you mean" with clickable corrections
+36. Search **`x`**: "Keep typing", not "No products found"
+37. Copy the URL from step 32 into a new tab — the search is shareable
+38. Back on the catalogue with no query → **Show more**: it walks past the first 12
+    products instead of pretending 12 is the whole catalogue
 ```
 
 > The reviews page has no **New review** button and no **Edit** control, deliberately: a

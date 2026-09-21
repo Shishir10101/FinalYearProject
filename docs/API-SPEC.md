@@ -272,6 +272,59 @@ The caller's own token is dead too, so the client must log in again.
 
 `delivery_fee: null` means "use the store-wide default" (`/orders/config/`).
 
+### Search — `/products/search/` *(added Day 12)*
+
+Domain-aware samagri search. Full design in `docs/SEARCH.md`.
+
+| Method | Path | Required role | Notes |
+|---|---|---|---|
+| `GET` | `/products/search/?q=<query>` | **public** | Ranked results, each carrying a `match` block. `?search=` accepted as an alias |
+
+Parameters: `q` (or `search`) · `category=<id>` narrows before ranking · `page`.
+
+```json
+{
+  "query": "sindur",
+  "normalized_query": "sindur",
+  "tokens": ["sindur"],
+  "expanded_terms": ["sindhur", "sindoor", "sindor", "sindur", "vermilion"],
+  "matched_domains": [
+    { "kind": "ritual", "name": "Pasni (Rice Feeding)", "ref": "pasni-rice-feeding" }
+  ],
+  "suggestions": [],
+  "too_short": false,
+  "count": 2, "next": null, "previous": null,
+  "results": [
+    { "id": 5, "name": "Sindoor Powder (Red)", "price": "50.00", "...": "…",
+      "match": {
+        "score": 72, "coverage": 1.0,
+        "codes": ["name_all", "name_position"],
+        "reasons": ["Matched Sindoor Powder (Red) on the alternative spelling “sindur” → “sindoor”"]
+      } }
+  ]
+}
+```
+
+- **Ranked by relevance, not popularity.** Name-match tier, then how early in the name the
+  match sits, then popularity **as a tie-break only** — it never outranks a better match.
+- **Transliteration-aware.** `sindur`, `dhup`, `deep`, `karpoor`, `sankha`, `nariyal` and
+  `agarbati` all returned **0** products before this endpoint existed.
+- **Reaches the domain.** `q=pasni` returns the 9 samagri of the Pasni ritual and its kit,
+  none of which is named after it — the link lives in `PujaItem` / `KitItem`. Each result
+  says whether it is **required** for the ritual or an **optional extra** of the kit.
+- **`match` is not decoration.** `codes` are machine-readable and traceable to a weight in
+  `products/search.py::WEIGHTS`; `reasons` are the sentence the storefront renders verbatim.
+  The client never invents a reason.
+- **`too_short`** distinguishes "keep typing" from "nothing matched" — an empty result set
+  cannot tell them apart, so the API says which it is.
+- **`suggestions`** are drawn from the catalogue's own vocabulary, so a correction is always
+  a word this shop can actually find.
+- **A non-numeric `category` is ignored**, not a 500.
+- **Separate from `?search=` on the list endpoints, deliberately.** The dashboard's item
+  picker uses that one and wants a plain substring match over one vendor's stock — a
+  different job from ranking a shopper's query. It also keeps the `match` block out of every
+  ordinary list response.
+
 ### Reviews *(added Day 11)*
 
 | Method | Path | Required role | Notes |
@@ -803,7 +856,7 @@ Query params: `?horizon=30` (1–90) · `?limit=12` (1–50) · `?product=<id>`
 
 | Endpoint group | customer | vendor | admin | super_admin |
 |---|---|---|---|---|
-| Public catalogue, kits, areas, recommendations | ✅ | ✅ | ✅ | ✅ |
+| Public catalogue, kits, areas, recommendations, **search** | ✅ | ✅ | ✅ | ✅ |
 | Own cart / checkout / own orders | ✅ | ✅ | ✅ | ✅ |
 | `/analytics/*` | ❌ 403 | ✅ *scoped* | ✅ | ✅ |
 | `/products/admin/products/*` | ❌ 403 | ✅ *scoped* | ✅ | ✅ |
@@ -829,8 +882,10 @@ Verified end-to-end by `backend/verify_day3.py` (57 assertions),
 `backend/verify_day8.py` (74 assertions — the kit/ritual write paths and the vendor
 read-but-not-write boundary), `backend/verify_day9.py` (49 assertions — the account
 picker, the resolved role, and shop creation promoting an account),
-`backend/verify_day11.py` (66 assertions — the review write, privacy, verified-purchase
-and moderation paths), and `backend/core/tests_roles.py` (64 unit tests).
+`backend/verify_day11.py` (68 assertions — the review write, privacy, verified-purchase
+and moderation paths), `backend/verify_day12.py` (84 assertions — ranking, transliteration,
+domain search, suggestions and the category filter), and `backend/core/tests_roles.py`
+(64 unit tests).
 
 Review moderation is also refused to a vendor **through the dashboard**, not just at the
 API: `browser_check.mjs` signs in as `vendor1`, confirms `Reviews` is absent from the

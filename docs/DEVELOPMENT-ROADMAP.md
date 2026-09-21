@@ -37,9 +37,11 @@ leaves a working application behind it. The shopping flow already works — prot
 | Full order history page | ✅ **built Day 10** — `/account/orders`; the nav link had pointed at nothing |
 | **Reviews and ratings** | ✅ **built Day 11** — model, endpoints, storefront section and `/reviews` moderation |
 | Review-flow browser coverage | ✅ **added Day 11** — found a 537-request fetch loop on the product page that nothing else could see |
+| **Samagri search** | ✅ **rebuilt Day 12** — relevance-ranked, transliteration-aware, and able to reach the samagri behind a ritual or festival name |
+| Catalogue paging | ✅ **fixed Day 12** — it showed 12 of 35 products as though that were all of them |
 
 **Remaining P0 work: none.** Everything above is done and verified. What is left is P1
-(wishlist, image upload widget, search relevance) and P2.
+(wishlist, image upload widget) and P2.
 
 ---
 

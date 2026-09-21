@@ -221,6 +221,9 @@ backend/
   core/management/commands/seed_data.py  THE seed command (products/ has a dead duplicate)
   accounts/ products/ festivals/ orders/ analytics/
     models.py serializers.py views.py urls.py admin.py
+  products/search.py                   ★ domain-aware search (synonyms, domain index, scoring)
+  festivals/recommender.py             ★ explainable recommendation ranker
+  analytics/forecasting.py             ★ demand forecaster (stdlib only)
   media/products/                      product images
   venv/                                virtualenv — run python from here
   db.sqlite3                           the database
@@ -283,7 +286,8 @@ venv/Scripts/python.exe verify_day6.py                # 40 assertions — the ri
 venv/Scripts/python.exe verify_day7.py                # 30 assertions — token revocation
 venv/Scripts/python.exe verify_day8.py                # 74 assertions — kit & ritual authoring
 venv/Scripts/python.exe verify_day9.py                # 49 assertions — vendor administration
-venv/Scripts/python.exe verify_day11.py               # 66 assertions — reviews & moderation
+venv/Scripts/python.exe verify_day11.py               # 68 assertions — reviews & moderation
+venv/Scripts/python.exe verify_day12.py               # 84 assertions — search & ranking
 
 # Real-browser checks (dashboard on :3001, storefront on :3000, API on :8000).
 # These are the ONLY checks that can see a client-side render failure: `AuthGate`
@@ -294,7 +298,7 @@ venv/Scripts/python.exe verify_day11.py               # 66 assertions — review
 cd admin-dashboard
 NODE_PATH=/tmp/harness/node_modules node scripts/browser_check.mjs      # 64 assertions
 cd ../frontend
-NODE_PATH=/tmp/harness/node_modules node scripts/storefront_check.mjs   # 60 assertions
+NODE_PATH=/tmp/harness/node_modules node scripts/storefront_check.mjs   # 79 assertions
 # The storefront check places ONE real order; clean it up with
 #   cd backend && venv/Scripts/python.exe manage.py purge_verification_orders
 # The dashboard check seeds one review through the API and removes it again; the
@@ -468,6 +472,27 @@ The fix is applied on **both** sides, and both are worth keeping: `ReviewsSectio
 the callback in a `useRef` so it is safe by construction, and the page passes a
 `useCallback` whose state update returns the previous object when the values are
 unchanged. Do not "simplify" either one away.
+
+**The same hazard was in `ToastContext`.** `success` / `error` / `info` were bare arrow
+functions inside an inline object literal, so `useToast()` handed out new identities on every
+render. Anything that put `error` in a `useCallback` dep would have re-created its own callback
+forever. Fixed at the root with `useCallback` and a memoised value, so no consumer has to
+remember. **Before adding a context, memoise what it hands out** — the cost of getting this
+wrong is a request storm, not a slow render.
+
+### Two frontend traps found on Day 12
+
+- **`router.replace()` is a no-op when only a search-param *value* changes** on a statically
+  prerendered route. Measured on `/products`: going from `/products` to `/products?q=pasni`
+  worked, but replacing `?q=sindoer` with `?q=sindoor` produced **no RSC request and no URL
+  change at all** — the page showed results for "sindoor" while the address bar still read
+  "sindoer". The no-query case working is what made it look fine. For client-side filter
+  state, use `window.history.replaceState`, which is the documented way to update search
+  params from a Client Component and which the App Router keeps in step with
+  `useSearchParams`.
+- **A plain function named `use…` is treated as a React Hook.** `const useSuggestion = () => …`
+  called from an `onClick` is a `react-hooks/rules-of-hooks` **error**, not a warning. Name
+  helpers for what they do (`applySuggestion`), not for how they read.
 
 One thing the item editor must not lose: both item list endpoints set
 `pagination_class = None` and return a **bare array**. `PAGE_SIZE` is 12, Bratabandha has
@@ -768,6 +793,32 @@ Two separate features. **Do not merge them. Do not fake either.**
 - `staple_samagri` exists because kitless festivals (e.g. Ganesh Chaturthi, `festival_type='other'`)
   would otherwise be invisible. It is **capped below** `festival_required` on purpose.
 
+### Samagri search ✅ implemented *(Day 12)*
+
+Not one of the two required AI components — it is domain logic — but it is a ranking model and
+follows the same rules: deterministic, explainable, weights in one place, unit-testable.
+Doc: `docs/SEARCH.md`.
+
+- **Implementation:** `backend/products/search.py`. The view `ProductSearchView` only does
+  HTTP + serialization. **Put ranking logic in `search.py`, never in the view.**
+- Endpoint: `GET /api/products/search/?q=`. **Separate from `?search=` on the list
+  endpoints** — the dashboard's item picker uses that one and wants a plain substring match
+  over one vendor's stock. Do not merge them, and do not delete `?search=`.
+- Every result carries a `match` block: `score`, `coverage`, `codes`, `reasons`. The codes must
+  stay inside `REASON_CODES` and each must be traceable to a `WEIGHTS` entry — there is a test
+  for exactly that, because a reason with no weight behind it is a score nobody can trace.
+- **`SYNONYM_GROUPS` members are never split into their component words.** Splitting registers
+  `puja` as a synonym of `thali` (from "puja plate") and `batti` as one of `dhoop` (from "dhoop
+  batti"), so "puja" returns plates and "dhup" returns *Cotton Wicks*. Both were observed.
+  Multi-word members match as **phrases**. There is a test class for this isolation.
+- **The domain index is what makes a ritual name searchable.** No product is named after a
+  ritual; the link is `PujaItem` / `KitItem`. `pasni` and `griha pravesh` returned **0**
+  products before this existed.
+- **Popularity is a tie-break, never part of the score.** It decides between products that
+  matched equally well; it never outranks a better match.
+- Changing `WEIGHTS` or `SYNONYM_GROUPS` means updating `docs/SEARCH.md` §2 — the doc quotes
+  the numbers verbatim.
+
 ### Demand prediction ✅ implemented
 - **Implementation:** `backend/analytics/forecasting.py` → `SeasonalForecaster`.
   Endpoint `GET /api/analytics/demand-forecast/` (admin only). Doc: `docs/AI-PREDICTION.md`.
@@ -846,11 +897,11 @@ Minimum loop for any change:
 Keep it in `docs/CURRENT-STATE.md`.
 
 Django tests live in `backend/<app>/tests.py` plus `backend/core/tests_roles.py`.
-There are now **336**, covering the recommender (30), the forecaster (33), the
+There are now **379**, covering the recommender (30), the forecaster (33), the
 role/scoping system (64), order status history (23), password reset (25),
 catalogue validation (17), the Puja entry point (24), add-puja-to-cart (10),
-token revocation (17), ritual/kit authoring (32), vendor administration (27)
-and reviews (25).
+token revocation (17), ritual/kit authoring (32), vendor administration (27),
+reviews (25) and search (41).
 Live suites cover the rest:
 
 | Suite | Assertions |
@@ -864,10 +915,11 @@ Live suites cover the rest:
 | `verify_day7.py` | 30 |
 | `verify_day8.py` | 74 |
 | `verify_day9.py` | 49 |
-| `verify_day11.py` | 66 |
-| **Total live** | **641** |
+| `verify_day11.py` | 68 |
+| `verify_day12.py` | 84 |
+| **Total live** | **727** |
 | `admin-dashboard/scripts/browser_check.mjs` | **64** (browser, not HTTP) |
-| `frontend/scripts/storefront_check.mjs` | **60** (browser, not HTTP) |
+| `frontend/scripts/storefront_check.mjs` | **79** (browser, not HTTP) |
 
 **After any verification sweep, purge what it created** — `purge_verification_orders`,
 `purge_verification_users` and `purge_verification_reviews`, all with `--dry-run`. A
@@ -876,7 +928,21 @@ on the system, and — for reviews — silently changes a seeded product's ratin
 what `verify_day11.py` asserts is clean. Both browser checks now clean up after
 themselves (the dashboard seeds a review through the API and deletes it; the storefront
 posts one and deletes it through the UI), so a leftover review means a run was
-interrupted.
+interrupted. `verify_day12.py` writes nothing at all.
+
+**A verifier must own every precondition it asserts.** This is the rule that both Day 11
+failures turned on. `verify_day11.py` asserted "the verified-purchase badge is false before
+any order" about `testuser` — and `testuser` already had an order for that product, because
+the storefront browser check buys the most popular product. The feature was right; the
+verifier was asserting about a history it did not control. Both checks now run as a throwaway
+account the script registers itself, and in the order that makes the badge known to be false.
+Ask of every assertion: *did I create the state I am about to claim?* If not, create it, or
+report a labelled SKIP — never assume it.
+
+**And read the data before choosing a probe for it.** A Day 12 check searched for
+"Retired Nonexistent Samagri" and expected nothing; "samagri" is a real word in several product
+names and descriptions, so it correctly matched one. The failure was in the probe, not the
+product.
 
 > **Test the thing, not its shape.** When the recommender was rebuilt on Day 2, the
 > old tests passed against a broken implementation because they only asserted the
@@ -1095,7 +1161,17 @@ page**: an inline `onSummaryChange` in a `useCallback` dependency list, at 537 r
 the reviews endpoint in 12 seconds and still climbing. The build, ESLint, the 336 unit tests
 and the live API suites all missed it; it appeared only as flakiness in a check that had been
 written minutes earlier. Both causes are fixed and both are pinned by a check.
-**336 unit tests + 641 live assertions + 124 browser assertions pass.**
+
+**Day 12 — the Samagri entry point (2026-09-21)** rebuilt search, the weakest of the six
+discovery paths `AGENTS.md` §1 requires. It was `icontains` over name and description, which
+meant `sindur`, `dhup`, `deep`, `karpoor`, `sankha`, `nariyal` and `agarbati` all returned
+**zero** products; `pasni` and `griha pravesh` returned **zero** although both are seeded
+rituals with complete kits, because no product is named after a ritual; and `diyo` ranked
+*Cotton Wicks* above *Brass Diyo (Oil Lamp)*. All three are fixed, with every result carrying a
+reason the storefront renders verbatim (`docs/SEARCH.md`). The catalogue page also stopped
+showing 12 of 35 products as though that were all of them. Along the way: `ToastContext` was
+handing out unstable callbacks — the same loop hazard as Day 11, fixed at the root.
+**379 unit tests + 727 live assertions + 143 browser assertions pass.**
 
 **The shopping flow already works.** Do not rebuild it. Fix, extend, and polish.
 
@@ -1125,6 +1201,14 @@ These are working and load-bearing. Improve around them; do not rewrite them.
 - **`CartContext`'s `cartLoaded` flag, and the redirect guards in `/checkout` and
   `/cart` that read it.** Removing it re-introduces the Day 10 bugs; see §9 rules 9–11.
 - **The React Context providers** (`Auth`, `Cart`, `Toast`) and the `layout.js` composition.
+  Note that `ToastContext` memoises its callbacks and its value — that is load-bearing, not
+  tidiness; see §5.
+- **`?search=` on the product list endpoints.** The dashboard's item picker depends on it and
+  wants a plain substring match over one vendor's stock. `/products/search/` is a different
+  job and does not replace it.
+- **`products/search.py`'s `SYNONYM_GROUPS` isolation and the `WEIGHTS` table.** Extending
+  them is expected; splitting group members into words is a bug, and moving a weight means
+  updating `docs/SEARCH.md` §2.
 - **`FestivalKit.total_price` / `original_price`** as model properties.
 - **The `transaction.atomic` checkout.** Stock decrement and order creation must stay atomic.
 - **Two separate frontends.** The customer storefront and the admin panel are deliberately
