@@ -105,11 +105,16 @@ class PujaDetailSerializer(serializers.ModelSerializer):
 class FestivalKitAdminSerializer(serializers.ModelSerializer):
     """Write serializer for kits.
 
-    An explicit field list rather than ``__all__``, for two reasons: the dashboard
-    table needs ``item_count`` (a declared field is not reliably picked up by
-    ``__all__``), and ``image`` is a file upload that a JSON form cannot set — a
-    client posting a string path there would get a confusing validation error
-    instead of a field it simply does not render.
+    An explicit field list rather than ``__all__``: the dashboard table needs
+    ``item_count`` (a declared field is not reliably picked up by ``__all__``).
+
+    ``image`` is now included. It was previously left out on the grounds that "a file
+    upload a JSON form cannot set" — true at the time, and it meant the seeded kit
+    artwork was the only artwork a kit could ever have. The dashboard now uploads
+    multipart (`ImageField` + `api.upload()`), so the reason no longer holds and the
+    omission would just be a column nobody can fill. It stays optional: a kit with no
+    image renders the storefront placeholder, which is the same behaviour as before
+    for the seven seeded kits that do have one.
     """
 
     item_count = serializers.SerializerMethodField()
@@ -117,7 +122,7 @@ class FestivalKitAdminSerializer(serializers.ModelSerializer):
     class Meta:
         model = FestivalKit
         fields = ['id', 'name', 'festival_type', 'description', 'discount_percent',
-                  'puja', 'is_active', 'item_count', 'created_at', 'updated_at']
+                  'puja', 'is_active', 'image', 'item_count', 'created_at', 'updated_at']
         read_only_fields = ['created_at', 'updated_at']
 
     def get_item_count(self, obj):

@@ -205,6 +205,38 @@ Three decisions worth keeping:
 > `activeField: 'is_approved'` — patching the wrong boolean returns 200 and changes nothing,
 > which looks like it worked until you reload.
 
+#### `WishlistItem` — *added Day 13*
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | PK | |
+| `user` | FK → `User`, CASCADE | Whose list it is |
+| `product` | FK → `Product`, **CASCADE** | Unlike `OrderItem`, this is a live pointer, not a snapshot |
+| `created_at` | datetime | Orders the list newest-first |
+
+**Default ordering:** `-created_at, -id`
+**Constraint:** `unique_together = ('user', 'product')` — one row per customer per product.
+**Index:** `(user, -created_at)` — the only query is "this user's list, newest first".
+
+Three decisions:
+
+- **`product` is `CASCADE`, not `SET_NULL`.** This closes the last item on the "no
+  `Coupon` / `Review` / `Wishlist` tables" list in §6. A wishlist row is a pointer to
+  something you intend to buy, so if the product is deleted there is nothing left to save;
+  a dangling row would render as a card whose link 404s. `OrderItem` is the opposite
+  (`SET_NULL` + a snapshot) because an order is a record of a past transaction that must
+  survive the product disappearing — the two are deliberately different.
+- **One row per `(user, product)`.** A wishlist showing the same product five times is not a
+  wishlist. As with `Review`, a unique constraint is the only place this can be enforced — a
+  UI check is a suggestion. The API is create-or-**get** rather than create-or-fail, because
+  the control that calls it is a toggle and a double-clicked heart must not be a 400.
+- **`created_at` is the ordering key**, so the thing you just saved is at the top rather than
+  buried.
+
+> `image` on `Product` and `FestivalKit` was a column the seed data filled and no dashboard
+> screen could set. Both are now writable through a multipart upload (Day 13); `FestivalKit`
+> keeps `image` optional, so a kit with no picture renders the storefront placeholder.
+
 ---
 
 ### 3.3 `orders` — cart, checkout, fulfilment
@@ -472,6 +504,22 @@ SQLite cannot express these; they are enforced in application code.
 | A vendor's new product is always attributed to them | `AdminProductListCreateView.perform_create()` |
 | `role` cannot be self-assigned | `UserProfileSerializer.read_only_fields` |
 | Every `SyntheticSalesRecord` is flagged synthetic | `generate_synthetic_sales` command |
+| **`Product.stock` is reserved on order and released on cancel** | `CheckoutView` ↔ `orders.views.release_order_stock` / `reserve_order_stock` *(Day 13.1)* |
+| **A deleted verification order releases its reservation** | `purge_verification_orders` |
+| **Deleting a probe account releases its orders' reservations** | `purge_verification_users` — `Order.user` is `CASCADE`, so this was a third path with the same flaw |
+
+**`Product.stock` is a derived-looking value that nothing derives.** It is decremented by
+checkout and — as of Day 13.1 — incremented when an order is cancelled, and it is the one
+number in the schema that can drift silently and permanently. Before that fix, cancelling an
+order left the decrement in place and so did deleting one, and the catalogue had leaked **538
+units across 23 products**. Two consequences worth knowing:
+
+- **A drift is only visible against a reference.** There is no ledger to reconcile against —
+  `stock` is the number. The reference is `products/management/commands/seed_data.py`, and
+  `seed_data --reset-stock` re-applies it. After a verification sweep, compare.
+- **The seeded orders do not reserve anything.** `seed_data` creates the 8 sample orders
+  without touching stock, so the seeded values are the intended baseline exactly as written.
+  If that ever changes, this comparison stops being valid.
 
 ---
 
@@ -483,4 +531,6 @@ SQLite cannot express these; they are enforced in application code.
 | 2 | `shipping_city` is a bare varchar, not an FK to `Area` | P1 | Chosen deliberately: an FK migration would have required rewriting existing order rows. The values currently match `Area.slug` by convention. |
 | 3 | `is_admin_user` duplication | P2 | Legacy column kept in sync by `save()`. Remove once nothing reads it. |
 | 4 | `custom_user_model = auth.User` | P2 | Using Django's built-in `User` + a profile rather than a custom user model. Migrating later is painful, but changing it now would break both existing repos. |
-| 5 | No `Coupon` / `Wishlist` tables | P2 | Not in scope; noted as post-MVP. **`Review` is no longer on this list** — the table exists as of Day 11 (§3.2). |
+| 5 | No `Coupon` table | P2 | Not in scope; noted as post-MVP. **`Review` (Day 11) and `WishlistItem` (Day 13) are no longer on this list** — both tables now exist (§3.2, §3.3). |
+| 6 | `Product.stock` has no audit trail | P2 | It is the only record of what is on the shelf. A ledger of stock movements would make a drift self-evident instead of requiring a comparison against the seed file. Deliberately not built: it is a table plus a write on every path that moves stock, for a demo. |
+| 7 | `popularity_score` is not reversed on cancellation | P2 | Deliberate: it records demand rather than settlement, so it stays monotonic — a cancelled order still means a customer asked for something. Because it is also the field most exposed to fixture traffic, `purge_verification_orders` reverses it for the verification orders it deletes (floored at zero), and `seed_data --reset-popularity` repairs existing drift. It feeds the recommender's popularity bonus, so leaving it inflated makes the demo recommend whatever the test suite bought. |

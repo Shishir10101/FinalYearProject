@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     SalesOverviewView, TrendingProductsView, InventoryView,
-    PredictionAlertsView, DemandForecastView,
+    PredictionAlertsView, DemandForecastView, AreaBreakdownView,
 )
 
 urlpatterns = [
@@ -10,4 +10,5 @@ urlpatterns = [
     path('inventory/', InventoryView.as_view(), name='inventory'),
     path('predictions/', PredictionAlertsView.as_view(), name='prediction-alerts'),
     path('demand-forecast/', DemandForecastView.as_view(), name='demand-forecast'),
+    path('areas/', AreaBreakdownView.as_view(), name='area-breakdown'),
 ]

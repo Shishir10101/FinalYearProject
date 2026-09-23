@@ -230,3 +230,44 @@ class Review(models.Model):
 
     def __str__(self):
         return f'{self.product.name} — {self.rating}★ by {self.user.username}'
+
+
+class WishlistItem(models.Model):
+    """A product one customer has saved for later.
+
+    `docs/DATABASE-DESIGN.md` listed this next to `Review` as "not in scope; noted
+    as post-MVP". It is the last of that group, and it is a P1 item for a plain
+    retail reason: this is a festival-goods shop, so a shopper assembles a list over
+    several visits as Dashain or Tihar approaches. Losing that list is losing the
+    sale.
+
+    Three deliberate decisions, each mirroring `Review` so the two behave alike:
+
+    * **One row per (user, product)** (`unique_together`). A wishlist with the same
+      product five times is not a wishlist. As with reviews, a unique constraint is
+      the only place this can actually be enforced — a UI check is a suggestion.
+    * **The product FK is `CASCADE`**, unlike `OrderItem`'s snapshot. This is a
+      pointer to a live product, not a record of a past transaction: if the product
+      is deleted there is nothing left to save, and a dangling wishlist row would
+      render as a card that 404s when clicked.
+    * **`created_at` orders the list newest-first**, so the thing you just saved is
+      at the top rather than buried.
+    """
+
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='wishlist_items',
+    )
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name='wishlisted_by',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        unique_together = ('user', 'product')
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.product.name} saved by {self.user.username}'

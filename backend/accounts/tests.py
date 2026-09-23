@@ -722,3 +722,197 @@ class ResolvedRoleInProfileTests(TestCase):
         user.refresh_from_db()
         self.assertEqual(user.first_name, 'Renamed')
         self.assertEqual(response.json()['profile']['role'], ROLE_CUSTOMER)
+
+
+class PasswordChangeTests(TestCase):
+    """Changing a password while signed in.
+
+    The gap this covers: the *only* way to change a password used to be the
+    forgot-password flow, which needs mailbox access and asserts you have lost the
+    password. There was no authenticated change endpoint at all.
+
+    Two properties are load-bearing and neither is visible from a success case:
+
+    1. **The current password must be required.** The caller is already
+       authenticated, so without it any stolen access token could be escalated into
+       permanent account takeover — the thief changes the password and locks the
+       owner out for good. The test that matters asserts a *wrong* current password
+       changes nothing, not merely that it returns 400.
+    2. **Every token is revoked, including the caller's own.** Otherwise the change
+       protects nothing that had already been stolen, which is the usual reason to
+       change it in the first place.
+    """
+
+    CHANGE_URL = '/api/auth/password-change/'
+
+    def setUp(self):
+        cache.clear()   # DRF throttles through the default cache; it is not reset between tests.
+        self.user = User.objects.create_user(
+            'changer', email='changer@example.com', password=OLD_PASSWORD,
+        )
+        UserProfile.objects.create(user=self.user)
+        self.client = APIClient()
+
+    def login(self, password=OLD_PASSWORD, username='changer'):
+        response = self.client.post('/api/auth/login/', {
+            'username': username, 'password': password,
+        }, format='json')
+        return response.status_code, response.json()
+
+    def as_user(self, token):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        return client
+
+    def change(self, token, current=OLD_PASSWORD, new=NEW_PASSWORD, confirm=None):
+        return self.as_user(token).post(self.CHANGE_URL, {
+            'current_password': current,
+            'new_password': new,
+            'new_password2': new if confirm is None else confirm,
+        }, format='json')
+
+    def test_anonymous_cannot_change_a_password(self):
+        response = self.client.post(self.CHANGE_URL, {
+            'current_password': OLD_PASSWORD,
+            'new_password': NEW_PASSWORD, 'new_password2': NEW_PASSWORD,
+        }, format='json')
+        self.assertEqual(response.status_code, 401)
+        # And nothing changed.
+        self.assertTrue(self.user.check_password(OLD_PASSWORD))
+
+    def test_wrong_current_password_changes_nothing(self):
+        _, body = self.login()
+        response = self.change(body['access'], current='DefinitelyWrong999')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('current_password', response.json())
+
+        # The assertion that gives the 400 meaning: the password is untouched. A
+        # 400 that still wrote the new password would pass the line above.
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(OLD_PASSWORD))
+        self.assertFalse(self.user.check_password(NEW_PASSWORD))
+        self.assertEqual(self.login(OLD_PASSWORD)[0], 200)
+        self.assertEqual(self.login(NEW_PASSWORD)[0], 401)
+
+    def test_a_stolen_token_alone_cannot_take_over_the_account(self):
+        """The point of requiring the current password.
+
+        Simulates the threat: an attacker holds a valid access token but does not
+        know the password. Every guess must fail and leave the owner's password
+        working.
+        """
+        _, body = self.login()
+        attacker = self.as_user(body['access'])
+        for guess in ['password', 'admin123', 'letmein123', OLD_PASSWORD + 'x']:
+            response = attacker.post(self.CHANGE_URL, {
+                'current_password': guess,
+                'new_password': 'AttackerPass123',
+                'new_password2': 'AttackerPass123',
+            }, format='json')
+            self.assertEqual(response.status_code, 400, f'guess {guess!r} was accepted')
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(OLD_PASSWORD))
+        self.assertEqual(self.login(OLD_PASSWORD)[0], 200)
+
+    def test_new_password_must_differ_from_the_current_one(self):
+        _, body = self.login()
+        response = self.change(body['access'], new=OLD_PASSWORD)
+        self.assertEqual(response.status_code, 400)
+        # Rejected rather than reported as a successful no-op change.
+        self.assertIn('new_password', response.json())
+
+    def test_mismatched_confirmation_is_refused(self):
+        _, body = self.login()
+        response = self.change(body['access'], confirm='SomethingElse456')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('new_password2', response.json())
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(OLD_PASSWORD))
+
+    def test_the_new_password_must_pass_djangos_validators(self):
+        _, body = self.login()
+        response = self.change(body['access'], new='123')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('new_password', response.json())
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(OLD_PASSWORD))
+
+    def test_a_successful_change_switches_which_password_works(self):
+        _, body = self.login()
+        response = self.change(body['access'])
+        self.assertEqual(response.status_code, 200)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(NEW_PASSWORD))
+        self.assertFalse(self.user.check_password(OLD_PASSWORD))
+        self.assertEqual(self.login(NEW_PASSWORD)[0], 200)
+        self.assertEqual(self.login(OLD_PASSWORD)[0], 401)
+
+    def test_the_change_revokes_the_token_that_made_it(self):
+        """The caller's own session dies with the rest, and the response says so."""
+        _, body = self.login()
+        response = self.change(body['access'])
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['reauthentication_required'])
+
+        # The token used a moment ago is now refused.
+        profile = self.as_user(body['access']).get('/api/auth/profile/')
+        self.assertEqual(profile.status_code, 401)
+
+    def test_other_sessions_are_signed_out_too(self):
+        """A second device's token must not survive the change."""
+        _, first = self.login()
+        _, second = self.login()
+
+        self.assertEqual(self.change(first['access']).status_code, 200)
+
+        self.assertEqual(
+            self.as_user(second['access']).get('/api/auth/profile/').status_code, 401,
+        )
+
+
+class LogoutAllTests(TestCase):
+    """`/auth/logout-all/` had existed since Day 7, documented as a user-facing
+    action, with **no client calling it**. These pin the behaviour the new Account
+    Security panel relies on."""
+
+    LOGOUT_ALL_URL = '/api/auth/logout-all/'
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            'signedin', email='signedin@example.com', password=OLD_PASSWORD,
+        )
+        UserProfile.objects.create(user=self.user)
+        self.client = APIClient()
+
+    def login(self, password=OLD_PASSWORD):
+        response = self.client.post('/api/auth/login/', {
+            'username': 'signedin', 'password': password,
+        }, format='json')
+        return response.status_code, response.json()
+
+    def as_user(self, token):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {token}')
+        return client
+
+    def test_anonymous_is_refused(self):
+        self.assertEqual(self.client.post(self.LOGOUT_ALL_URL, {}, format='json').status_code, 401)
+
+    def test_it_revokes_the_callers_own_token_as_well(self):
+        _, body = self.login()
+        response = self.as_user(body['access']).post(self.LOGOUT_ALL_URL, {}, format='json')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['token_version'], 1)
+
+        self.assertEqual(
+            self.as_user(body['access']).get('/api/auth/profile/').status_code, 401,
+        )
+
+    def test_the_password_still_works_afterwards(self):
+        """Signing out everywhere must not be a lockout — you can log back in."""
+        _, body = self.login()
+        self.as_user(body['access']).post(self.LOGOUT_ALL_URL, {}, format='json')
+        self.assertEqual(self.login(OLD_PASSWORD)[0], 200)

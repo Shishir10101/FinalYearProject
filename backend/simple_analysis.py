@@ -9,7 +9,7 @@ from products.models import Category, Product
 from orders.models import Order, OrderItem, Cart
 from festivals.models import FestivalKit, KitItem, UpcomingFestival
 
-print('=== Puja Samagri E-Commerce Platform Database Analysis ===\n')
+print('=== Puja Sewa E-Commerce Platform Database Analysis ===\n')
 
 # 1. Users and UserProfiles
 print('1. Users and UserProfiles Analysis:')

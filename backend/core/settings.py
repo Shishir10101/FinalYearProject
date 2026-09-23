@@ -147,7 +147,7 @@ DELIVERY_FEE = 100
 # machinery — not a stub that pretends to deliver — it simply has no SMTP host
 # configured, which is the correct setup for a local demo.
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-DEFAULT_FROM_EMAIL = 'Puja Samagri Store <no-reply@pujasmagri.com>'
+DEFAULT_FROM_EMAIL = 'Puja Sewa <no-reply@pujasewa.com>'
 
 # Where the customer storefront lives, used to build absolute links in email.
 FRONTEND_URL = 'http://localhost:3000'

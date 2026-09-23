@@ -1,4 +1,4 @@
-# Puja Samagri Store Nepal
+# Puja Sewa
 
 Online Puja Samagri e-commerce platform for **Kathmandu Valley**
 (Kathmandu · Lalitpur · Bhaktapur).
@@ -25,6 +25,25 @@ venv/Scripts/python.exe manage.py refresh_festivals      # keep the festival cal
 venv/Scripts/python.exe manage.py generate_synthetic_sales   # demand-forecast dataset (SYNTHETIC)
 venv/Scripts/python.exe manage.py runserver 8000
 ```
+
+> **`seed_data` alone is enough for a complete demo.** It seeds products, categories, kits,
+> the festival calendar, the sample order history **and the rituals** — the Puja entry point
+> is one of the six the brief requires, and it used to be missing here (see
+> `docs/CURRENT-STATE.md` Day 13.1).
+>
+> Two opt-in flags repair a database that has drifted from the seed values, without touching
+> anything an admin changed by hand:
+>
+> ```bash
+> venv/Scripts/python.exe manage.py seed_data --reset-stock        # restore inventory
+> venv/Scripts/python.exe manage.py seed_data --reset-kit-items    # re-add missing kit lines
+> venv/Scripts/python.exe manage.py seed_data --reset-popularity   # undo fixture demand signal
+> ```
+>
+> Run all three if a verification sweep or a cancelled order has been through the database.
+> `--reset-kit-items` re-adds missing lines and corrects quantities; it never deletes.
+> `--reset-popularity` matters because that field feeds the recommender — fixture traffic left
+> in place makes the demo recommend whatever the tests bought.
 
 > `refresh_festivals` is **not optional** for a good demo. It re-anchors the festival
 > calendar to today. Run it if recommendations look like a plain best-seller list, or if
@@ -181,16 +200,16 @@ catalog settings (categories, delivery areas) · per-field validation on every f
 cd frontend        && npm run build      # must pass
 cd admin-dashboard && npm run build      # must pass
 cd backend         && venv/Scripts/python.exe manage.py check
-cd backend         && venv/Scripts/python.exe manage.py test    # 379 tests
+cd backend         && venv/Scripts/python.exe manage.py test    # 434 tests
 ```
 
 Live end-to-end checks (backend must be running on :8000):
 
 ```bash
 cd backend && venv/Scripts/python.exe verify_day2.py     #  68 assertions
-cd backend && venv/Scripts/python.exe verify_day3.py     #  55 assertions
+cd backend && venv/Scripts/python.exe verify_day3.py     #  57 assertions
 cd backend && venv/Scripts/python.exe verify_day3b.py    #  41 assertions
-cd backend && venv/Scripts/python.exe verify_day3c.py    # 128 assertions (full purchase path)
+cd backend && venv/Scripts/python.exe verify_day3c.py    # 129 assertions (full purchase path)
 cd backend && venv/Scripts/python.exe verify_day4.py     #  88 assertions (history, reset, validation)
 cd backend && venv/Scripts/python.exe verify_day6.py     #  40 assertions (the ritual entry point)
 cd backend && venv/Scripts/python.exe verify_day7.py     #  30 assertions (token revocation)
@@ -198,10 +217,15 @@ cd backend && venv/Scripts/python.exe verify_day8.py     #  74 assertions (kit &
 cd backend && venv/Scripts/python.exe verify_day9.py     #  49 assertions (vendor administration)
 cd backend && venv/Scripts/python.exe verify_day11.py    #  68 assertions (reviews & moderation)
 cd backend && venv/Scripts/python.exe verify_day12.py    #  84 assertions (search & ranking)
+cd backend && venv/Scripts/python.exe verify_day13.py    #  68 assertions (wishlist, uploads, areas, inventory)
 cd backend && venv/Scripts/python.exe manage.py purge_verification_orders   # clean up after
 cd backend && venv/Scripts/python.exe manage.py purge_verification_users
 cd backend && venv/Scripts/python.exe manage.py purge_verification_reviews
 ```
+
+Start the API server with `--noreload` before running a sweep, and join the commands with
+`;` rather than `&&` — several of these scripts exit non-zero while succeeding, so `&&`
+silently skips the rest and a broken run reads as a clean one.
 
 Run the purge commands afterwards: the verifiers exercise the real checkout and
 registration APIs, so they create real orders and a throwaway account. The commands
@@ -218,11 +242,11 @@ cd admin-dashboard && npx eslint --rule '{"no-undef":"error"}' src/
 
 No feature is complete until its build is clean and the flow has been exercised end to end.
 
-**Last verified:** 2026-09-21 — **379 unit tests + 727 live E2E assertions + 143 browser
-assertions** passing, both frontends building clean (14/14 customer pages, 13/13 admin
-pages), authorization tests correct, and the database back to its seeded state (8 orders ·
-35 products · 10 categories · 3 areas · 1 vendor · 7 kits · 8 rituals · 8 status events ·
-0 reviews · 0 scratch rows) after purging.
+**Last verified:** 2026-09-22 — **471 unit tests + 796 live E2E assertions + 188 browser
+assertions** passing, both frontends building clean (15/15 customer pages, 13/13 admin
+pages), authorization tests correct, and the database back to its seeded state (35 products ·
+10 categories · 3 areas · 1 vendor · 7 kits · 8 rituals · 0 reviews · 0 wishlist rows ·
+0 scratch rows, and every product's stock matching the seed values) after purging.
 
 Discovery works through the six paths the brief requires — **Product · Category · Festival ·
 Puja · Samagri · Ready-made Kit** — and the last of those is a real search rather than a
@@ -231,22 +255,37 @@ Powder*), reaches the samagri behind a ritual or festival name (`pasni` returns 
 of a ritual none of them is named after), ranks by how well a product matches rather than by
 popularity, and tells the shopper why each result is there. See `docs/SEARCH.md`.
 
+A shopper can **save products for later** — a heart on every product card and on the product
+page, a `/wishlist` page and a navbar count. The list lives on the account, so it survives a
+reload and a new visit, which for a festival shop is the difference between assembling a list
+over several weeks and losing it.
+
 The home page leads with the **festival calendar** — the next festival, its countdown, its
 kit (or a plain statement that there is no kit yet) and the required samagri — rather than a
 generic product grid.
 
 The admin dashboard can **author the whole domain**: products, categories, delivery areas,
 festival kits and rituals (including the samagri list behind each), and vendors — all from
-one shared editor. All three staff roles can log in; a vendor sees only its own catalogue.
+one shared editor. Products and kits now take an **image upload**, so the `image` column the
+seed data fills is no longer one nobody can set. All three staff roles can log in; a vendor
+sees only its own catalogue and its own analytics, including a new **orders-by-delivery-area**
+breakdown whose rows sum to the headline revenue figure.
 
 Two browser checks verify the apps in a real browser — `admin-dashboard/scripts/browser_check.mjs`
 and `frontend/scripts/storefront_check.mjs` — because a clean build and a green API suite
-cannot see a client-side render failure. Between them they have found five real bugs:
+cannot see a client-side render failure. Between them they have found seven real bugs:
 **a vendor could not log into the dashboard at all**, **a full page load of `/checkout`
 bounced to `/cart`**, **a successful checkout sent the customer to an empty cart instead of
-the confirmation**, **the "My Orders" nav link pointed at a route that did not exist**, and
+the confirmation**, **the "My Orders" nav link pointed at a route that did not exist**,
 **the product page refetched its reviews forever** — 537 requests in 12 seconds, invisible to
-the build, to ESLint, to 379 unit tests and to every live API assertion.
+the build, to ESLint, to 379 unit tests and to every live API assertion — and, on Day 13,
+**the admin catalogue list hid a third of the catalogue** (it read "Total Products 12" against
+36 rows, and a product created in the dashboard's own dialog never appeared).
+
+> On Windows, `NODE_PATH` for those checks must be a **Windows** path: Node resolves it
+> itself and does not understand Git-Bash's `/tmp` mount, so `/tmp/harness/node_modules`
+> fails with `Cannot find module 'playwright-core'` although the package is installed.
+> Resolve it once with `pwd -W` inside the harness directory.
 
 Run them against a **production build**, and start the two frontends sequentially with an
 explicit port: under `next dev` the HMR websocket fails in a sandboxed shell and the client

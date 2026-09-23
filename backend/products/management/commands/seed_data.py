@@ -1,4 +1,5 @@
 from django.core.management.base import BaseCommand
+from django.core.management import call_command
 from django.contrib.auth.models import User
 from accounts.models import UserProfile
 from products.models import Category, Product
@@ -10,7 +11,37 @@ import random
 
 
 class Command(BaseCommand):
-    help = 'Seed database with sample data for Puja Samagri Store'
+    help = 'Seed database with sample data for Puja Sewa'
+
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--reset-stock', action='store_true',
+            help=(
+                'Also re-apply this file\'s stock values to products that already '
+                'exist. Safe to run repeatedly. Use it to repair inventory that was '
+                'consumed by orders which were cancelled or deleted before stock was '
+                'released back (see orders.views.release_order_stock).'
+            ),
+        )
+        parser.add_argument(
+            '--reset-kit-items', action='store_true',
+            help=(
+                'Also re-apply this file\'s item lists to kits that already exist: '
+                're-adds missing lines and corrects drifted quantities and required '
+                'flags. Never deletes a line, so a kit an admin extended by hand keeps '
+                'its extra items.'
+            ),
+        )
+        parser.add_argument(
+            '--reset-popularity', action='store_true',
+            help=(
+                'Also re-apply this file\'s popularity scores to products that already '
+                'exist. Use it to undo demand signal added by verification orders — the '
+                'field feeds the recommendation engine, the trending list and the '
+                'default catalogue order, so fixture traffic left in place makes the '
+                'demo recommend whatever the tests bought.'
+            ),
+        )
 
     def handle(self, *args, **kwargs):
         self.stdout.write('Seeding database...')
@@ -133,15 +164,45 @@ class Command(BaseCommand):
         ]
 
         products = {}
+        reset_stock = kwargs.get('reset_stock', False)
+        reset_popularity = kwargs.get('reset_popularity', False)
+        restocked = 0
+        repopularised = 0
         for p_data in products_data:
             cat = categories[p_data.pop('category')]
-            product, _ = Product.objects.get_or_create(
+            product, created = Product.objects.get_or_create(
                 name=p_data['name'],
                 defaults={**p_data, 'category': cat}
             )
+            # `get_or_create` means re-running this command cannot repair a product
+            # that already exists — which matters, because `stock` and
+            # `popularity_score` are both *moved* by checkout and were historically
+            # never restored. These flags re-apply this file's values to existing rows,
+            # so the numbers here are the single source of truth for the catalogue.
+            if not created:
+                changed = []
+                if reset_stock and product.stock != p_data['stock']:
+                    product.stock = p_data['stock']
+                    changed.append('stock')
+                    restocked += 1
+                if reset_popularity and product.popularity_score != p_data['popularity_score']:
+                    product.popularity_score = p_data['popularity_score']
+                    changed.append('popularity_score')
+                    repopularised += 1
+                if changed:
+                    product.save(update_fields=changed)
             products[product.name] = product
 
         self.stdout.write(f'Created {len(products)} products')
+        if reset_stock:
+            self.stdout.write(
+                f'Reset stock on {restocked} existing product(s) to the values in this file'
+            )
+        if reset_popularity:
+            self.stdout.write(
+                f'Reset popularity on {repopularised} existing product(s) '
+                f'to the values in this file'
+            )
 
         # Festival Kits
         kits_data = [
@@ -271,6 +332,9 @@ class Command(BaseCommand):
             },
         ]
 
+        reset_kit_items = kwargs.get('reset_kit_items', False)
+        kit_items_repaired = 0
+        kit_items_readded = 0
         for kit_data in kits_data:
             items_list = kit_data.pop('items')
             kit, created = FestivalKit.objects.get_or_create(
@@ -286,8 +350,42 @@ class Command(BaseCommand):
                             quantity=qty,
                             is_required=required
                         )
+            elif reset_kit_items:
+                # Kit items are only written when the kit is *created*, so a line that
+                # is removed from a seeded kit is gone for good — re-running this
+                # command cannot bring it back. That is how "Dashain Tika Set" went
+                # missing from the Dashain kit's own item list, taking the kit's
+                # headline item, one required count and part of its price with it.
+                #
+                # This restores what this file describes: it re-adds missing lines and
+                # corrects a drifted quantity or required flag. It deliberately does
+                # **not** delete extra lines, because an admin may legitimately have
+                # added one and a repair tool must not destroy real work.
+                for prod_name, qty, required in items_list:
+                    product = products.get(prod_name)
+                    if product is None:
+                        continue
+                    item, item_created = KitItem.objects.get_or_create(
+                        kit=kit, product=product,
+                        defaults={'quantity': qty, 'is_required': required},
+                    )
+                    if item_created:
+                        # Counted separately: reporting "0 repaired" while silently
+                        # re-adding a line is the kind of output that makes a repair
+                        # look like a no-op.
+                        kit_items_readded += 1
+                    elif item.quantity != qty or item.is_required != required:
+                        item.quantity = qty
+                        item.is_required = required
+                        item.save(update_fields=['quantity', 'is_required'])
+                        kit_items_repaired += 1
 
         self.stdout.write(f'Created {len(kits_data)} festival kits')
+        if reset_kit_items:
+            self.stdout.write(
+                f'Kit items: re-added {kit_items_readded} missing, '
+                f'corrected {kit_items_repaired} drifted'
+            )
 
         # Upcoming Festivals
         today = date.today()
@@ -340,6 +438,11 @@ class Command(BaseCommand):
                 order.save()
 
             self.stdout.write(self.style.SUCCESS('Created sample orders'))
+
+        # Rituals are derived from the kits and products seeded above, so they must
+        # run last. Without this a fresh install has no Puja entry point at all —
+        # one of the six discovery paths AGENTS.md requires.
+        call_command('seed_pujas')
 
         self.stdout.write(self.style.SUCCESS('Database seeded successfully!'))
 

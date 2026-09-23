@@ -19,8 +19,11 @@ Run with::
 
 from decimal import Decimal
 
+import shutil
+import tempfile
+
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -28,7 +31,7 @@ from accounts.models import UserProfile
 from core.permissions import ROLE_ADMIN, ROLE_CUSTOMER
 from festivals.models import FestivalKit, KitItem, Puja, PujaItem
 from orders.models import Order, OrderItem
-from .models import Area, Category, Product, Review
+from .models import Area, Category, Product, Review, WishlistItem
 from .search import (
     PARTIAL_CODES, REASON_CODES, SYNONYMS, WEIGHTS, normalize, search_products,
 )
@@ -949,3 +952,496 @@ class SearchAPITests(SearchTestBase):
         response = APIClient().get(self.URL, {'q': 's'})
         self.assertTrue(response.data['too_short'])
         self.assertEqual(response.data['count'], 0)
+
+
+class WishlistTestBase(TestCase):
+    """Two customers, two products, one manager."""
+
+    def setUp(self):
+        self.category = Category.objects.create(name='Wishlist Cat')
+        self.product = Product.objects.create(
+            name='Saved Diyo', description='x', price=Decimal('250'),
+            stock=10, category=self.category,
+        )
+        self.other_product = Product.objects.create(
+            name='Saved Sindoor', description='x', price=Decimal('80'),
+            stock=10, category=self.category,
+        )
+        self.customer = self._user('wishlist_customer', ROLE_CUSTOMER)
+        self.other = self._user('wishlist_other', ROLE_CUSTOMER)
+
+    def _user(self, username, role):
+        user = User.objects.create_user(username, password='pw12345678')
+        UserProfile.objects.create(user=user, role=role)
+        return user
+
+    def api(self, user=None):
+        client = APIClient()
+        if user is not None:
+            client.credentials(
+                HTTP_AUTHORIZATION=f'Bearer {RefreshToken.for_user(user).access_token}'
+            )
+        return client
+
+    URL = '/api/products/wishlist/'
+
+    def add(self, user, product=None):
+        return self.api(user).post(
+            self.URL, {'product_id': (product or self.product).id}, format='json',
+        )
+
+
+class WishlistAccessTests(WishlistTestBase):
+    """A wishlist is private, and there is no anonymous one."""
+
+    def test_an_anonymous_get_is_refused(self):
+        self.assertEqual(self.api().get(self.URL).status_code, 401)
+
+    def test_an_anonymous_post_is_refused(self):
+        response = self.api().post(self.URL, {'product_id': self.product.id}, format='json')
+        self.assertEqual(response.status_code, 401)
+
+    def test_one_customer_cannot_see_anothers_list(self):
+        self.add(self.other)
+        response = self.api(self.customer).get(self.URL)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_one_customer_cannot_delete_anothers_entry(self):
+        self.add(self.other)
+        response = self.api(self.customer).delete(f'{self.URL}{self.product.id}/')
+        self.assertEqual(response.status_code, 404, 'must not leak that the row exists')
+        self.assertEqual(WishlistItem.objects.filter(user=self.other).count(), 1)
+
+
+class WishlistWriteTests(WishlistTestBase):
+    """Adding is idempotent, because the control that calls it is a toggle."""
+
+    def test_a_customer_can_save_a_product(self):
+        response = self.add(self.customer)
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(WishlistItem.objects.filter(user=self.customer).count(), 1)
+
+    def test_saving_the_same_product_twice_is_idempotent(self):
+        """A double-clicked heart must not 400, and must not create two rows."""
+        self.assertEqual(self.add(self.customer).status_code, 201)
+        second = self.add(self.customer)
+        self.assertEqual(second.status_code, 200, second.json())
+        self.assertEqual(
+            WishlistItem.objects.filter(user=self.customer, product=self.product).count(), 1,
+        )
+
+    def test_two_customers_can_save_the_same_product(self):
+        self.add(self.customer)
+        self.add(self.other)
+        self.assertEqual(WishlistItem.objects.filter(product=self.product).count(), 2)
+
+    def test_an_unknown_product_is_refused(self):
+        response = self.api(self.customer).post(
+            self.URL, {'product_id': 999999}, format='json',
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_delisted_product_cannot_be_saved(self):
+        """A delisted product has no reachable page, so a saved card would 404."""
+        self.product.is_active = False
+        self.product.save()
+        response = self.add(self.customer)
+        self.assertEqual(response.status_code, 400)
+
+    def test_the_client_cannot_write_into_somebody_elses_list(self):
+        """`user` is not a writable field, so a supplied one is ignored."""
+        response = self.api(self.customer).post(
+            self.URL, {'product_id': self.product.id, 'user': self.other.id}, format='json',
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        self.assertEqual(WishlistItem.objects.filter(user=self.other).count(), 0)
+
+
+class WishlistReadTests(WishlistTestBase):
+    """The list is a bare array of cards, newest first."""
+
+    def test_the_response_is_a_bare_list_not_a_paginated_dict(self):
+        """The storefront maps over it directly; a `results` dict would break it."""
+        self.add(self.customer)
+        data = self.api(self.customer).get(self.URL).data
+        self.assertIsInstance(data, list)
+        self.assertNotIn('results', data)
+
+    def test_each_row_carries_a_nested_product_a_card_can_render(self):
+        self.add(self.customer)
+        row = self.api(self.customer).get(self.URL).data[0]
+        self.assertEqual(row['product']['name'], 'Saved Diyo')
+        self.assertEqual(row['product']['slug'], self.product.slug)
+        # The fields `ProductCard` reads must all be present, or the card renders
+        # a blank price or an undefined category name.
+        for key in ('id', 'slug', 'name', 'price', 'image', 'in_stock',
+                    'category_name', 'unit', 'popularity_score'):
+            self.assertIn(key, row['product'], f'{key} missing from the nested product')
+
+    def test_the_newest_save_is_first(self):
+        self.add(self.customer, self.product)
+        self.add(self.customer, self.other_product)
+        rows = self.api(self.customer).get(self.URL).data
+        self.assertEqual(rows[0]['product']['name'], 'Saved Sindoor')
+
+    def test_the_list_does_not_issue_a_query_per_row(self):
+        """`select_related` keeps this flat: the count must not grow with row count.
+
+        Asserted as a *comparison* rather than a magic number. A hardcoded count
+        would break the moment an unrelated query is added to authentication (and it
+        did: JWT auth costs two queries — the user and the profile `get_role()`
+        reads), which would look like a regression in the wishlist. What actually
+        matters is that six saved products do not cost six times one.
+        """
+        first = Product.objects.create(
+            name='Bulk Wish 0', description='x', price=Decimal('10'),
+            stock=5, category=self.category,
+        )
+        self.add(self.customer, first)
+        with self.assertNumQueries(3) as one_row:
+            self.api(self.customer).get(self.URL)
+
+        for i in range(1, 6):
+            Product.objects.create(
+                name=f'Bulk Wish {i}', description='x', price=Decimal('10'),
+                stock=5, category=self.category,
+            )
+        for product in Product.objects.exclude(pk=first.pk):
+            self.add(self.customer, product)
+
+        with self.assertNumQueries(3) as six_rows:
+            self.api(self.customer).get(self.URL)
+
+        self.assertEqual(
+            one_row.final_queries, six_rows.final_queries,
+            'query count grew with the number of saved products — N+1',
+        )
+
+
+class WishlistRemovalTests(WishlistTestBase):
+    """Removal is keyed by product id — what the heart button actually has."""
+
+    def test_a_customer_can_remove_their_own_entry(self):
+        self.add(self.customer)
+        response = self.api(self.customer).delete(f'{self.URL}{self.product.id}/')
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(WishlistItem.objects.filter(user=self.customer).count(), 0)
+
+    def test_removing_something_not_saved_is_a_404(self):
+        response = self.api(self.customer).delete(f'{self.URL}{self.product.id}/')
+        self.assertEqual(response.status_code, 404)
+
+    def test_an_anonymous_delete_is_refused(self):
+        self.add(self.customer)
+        response = self.api().delete(f'{self.URL}{self.product.id}/')
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(WishlistItem.objects.filter(user=self.customer).count(), 1)
+
+    def test_removing_one_product_leaves_the_rest(self):
+        self.add(self.customer, self.product)
+        self.add(self.customer, self.other_product)
+        self.api(self.customer).delete(f'{self.URL}{self.product.id}/')
+        remaining = WishlistItem.objects.filter(user=self.customer)
+        self.assertEqual(remaining.count(), 1)
+        self.assertEqual(remaining.first().product_id, self.other_product.id)
+
+    def test_deleting_a_product_removes_it_from_every_wishlist(self):
+        """CASCADE, not SET_NULL: a dangling row would render a card that 404s."""
+        self.add(self.customer)
+        self.add(self.other)
+        self.product.delete()
+        self.assertEqual(WishlistItem.objects.count(), 0)
+
+
+class WishlistRoutingTests(WishlistTestBase):
+    """The route must not be swallowed by the `<slug:slug>` detail pattern."""
+
+    def test_the_endpoint_resolves_rather_than_being_read_as_a_slug(self):
+        """`wishlist` is a valid slug, so a mis-ordered urlconf 404s this endpoint."""
+        response = self.api(self.customer).get(self.URL)
+        self.assertEqual(response.status_code, 200, 'wishlist/ was matched as a product slug')
+
+    def test_the_literal_route_wins_over_a_product_with_a_colliding_slug(self):
+        """The documented trade-off, asserted so it cannot change silently.
+
+        A product named exactly "Wishlist" slugifies to `wishlist`, so its detail URL
+        is the same path as this endpoint — and the literal route, which is listed
+        first, wins. An anonymous request therefore gets the wishlist endpoint's 401
+        rather than that product's 200.
+
+        This is not a wishlist defect: `search`, `featured`, `categories` and `areas`
+        have carried the same property since they were added, and it is the reason
+        `products/urls.py` insists every literal path precedes the slug patterns. The
+        test exists so the precedence is *stated* rather than assumed — the failure
+        mode it guards against is somebody "tidying" the urlconf into the obvious
+        order and 404-ing the whole endpoint family.
+        """
+        product = Product.objects.create(
+            name='Wishlist', description='x', price=Decimal('10'),
+            stock=1, category=self.category,
+        )
+        self.assertEqual(product.slug, 'wishlist')
+        self.assertEqual(APIClient().get('/api/products/wishlist/').status_code, 401)
+
+    def test_a_product_with_any_other_slug_is_unaffected(self):
+        product = Product.objects.create(
+            name='Wishlist Diyo', description='x', price=Decimal('10'),
+            stock=1, category=self.category,
+        )
+        response = APIClient().get(f'/api/products/{product.slug}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['name'], 'Wishlist Diyo')
+
+
+class WishlistProductFlagTests(WishlistTestBase):
+    """`is_wishlisted` on the detail payload drives the heart on first paint."""
+
+    def test_a_guest_sees_false(self):
+        response = APIClient().get(f'/api/products/{self.product.slug}/')
+        self.assertFalse(response.data['is_wishlisted'])
+
+    def test_an_authenticated_customer_sees_false_before_saving(self):
+        response = self.api(self.customer).get(f'/api/products/{self.product.slug}/')
+        self.assertFalse(response.data['is_wishlisted'])
+
+    def test_it_becomes_true_once_saved(self):
+        self.add(self.customer)
+        response = self.api(self.customer).get(f'/api/products/{self.product.slug}/')
+        self.assertTrue(response.data['is_wishlisted'])
+
+    def test_another_customers_save_does_not_flip_your_flag(self):
+        self.add(self.other)
+        response = self.api(self.customer).get(f'/api/products/{self.product.slug}/')
+        self.assertFalse(response.data['is_wishlisted'])
+
+
+class ProductImageUploadTests(TestCase):
+    """Multipart image upload on the admin product endpoint.
+
+    `docs/FEATURES.md` carried this as a ⚠️ — "products have an `image` column, but no
+    upload widget in either dashboard screen". The widget now exists, so the thing
+    worth testing is the part that is easy to get wrong and impossible to see: the
+    transport. A JSON body cannot carry a file, and a hand-set `Content-Type:
+    multipart/form-data` without a boundary is rejected by DRF as an empty body —
+    both of which look like "the upload silently did nothing".
+
+    **Media is redirected to a temp directory for the class.** Without this, every run
+    of this file writes real PNGs into `backend/media/products/` — a directory that is
+    committed on purpose — so a test suite run silently dirties the working tree and
+    the files pile up (`diyo_<random>.png` × N) because deleting the row does not
+    delete the file. Found by reading `git status` after a run.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._media_root = tempfile.mkdtemp(prefix='test-media-')
+        cls._media_override = override_settings(MEDIA_ROOT=cls._media_root)
+        cls._media_override.enable()
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._media_override.disable()
+        shutil.rmtree(cls._media_root, ignore_errors=True)
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            'img_admin', password='pw12345678', is_staff=True, is_superuser=True,
+        )
+        UserProfile.objects.create(user=self.admin, role=ROLE_ADMIN)
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=bearer(self.admin))
+
+        self.category = Category.objects.create(name='Image Cat')
+        self.product = Product.objects.create(
+            name='Photogenic Diyo', description='x', price=Decimal('100'),
+            stock=5, category=self.category,
+        )
+
+    def _png(self, name='diyo.png'):
+        """A real 1x1 PNG, so `ImageField` validation actually passes."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        import base64
+        data = base64.b64decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+        )
+        return SimpleUploadedFile(name, data, content_type='image/png')
+
+    def url(self, pk=None):
+        return f'/api/products/admin/products/{pk or self.product.id}/'
+
+    def test_multipart_patch_attaches_an_image(self):
+        response = self.client.patch(
+            self.url(), {'image': self._png()}, format='multipart',
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+
+        self.product.refresh_from_db()
+        self.assertTrue(self.product.image)
+        self.assertTrue(self.product.image.name.startswith('products/'))
+
+    def test_multipart_create_attaches_an_image(self):
+        response = self.client.post(
+            '/api/products/admin/products/',
+            {
+                'name': 'Fresh Upload', 'description': 'x', 'price': '150',
+                'stock': 3, 'category': self.category.id, 'unit': 'piece',
+                'image': self._png('fresh.png'),
+            },
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        created = Product.objects.get(pk=response.json()['id'])
+        self.assertTrue(created.image)
+
+    def test_json_null_clears_the_image(self):
+        """Removal cannot travel as multipart — an empty part is "not a file"."""
+        self.client.patch(self.url(), {'image': self._png()}, format='multipart')
+        self.product.refresh_from_db()
+        self.assertTrue(self.product.image)
+
+        response = self.client.patch(
+            self.url(), {'image': None}, format='json',
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.product.refresh_from_db()
+        self.assertFalse(self.product.image)
+
+    def test_a_non_image_file_is_rejected(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        bad = SimpleUploadedFile('notes.txt', b'not an image', content_type='text/plain')
+        response = self.client.patch(self.url(), {'image': bad}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('image', response.json())
+
+    def test_the_other_fields_still_save_alongside_the_image(self):
+        """One request must not silently drop the rest of the form."""
+        response = self.client.patch(
+            self.url(),
+            {'image': self._png(), 'name': 'Renamed Diyo', 'price': '175'},
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.name, 'Renamed Diyo')
+        self.assertEqual(self.product.price, Decimal('175'))
+        self.assertTrue(self.product.image)
+
+    def test_the_image_url_is_absolute_so_the_storefront_can_load_it(self):
+        """A relative `media/...` URL would resolve against the *page* and 404.
+
+        DRF's `ImageField` publishes a **fully absolute** URL when the request is in
+        the serializer context (`http://host/media/products/...`), and the storefront
+        renders it straight into `<img src>`. Either absolute form works; what must
+        not happen is a bare `media/...`, which the browser would resolve relative to
+        the current page — `/products/media/...` — and fail to load. That is the
+        regression this guards.
+        """
+        self.client.patch(self.url(), {'image': self._png()}, format='multipart')
+        data = self.client.get(f'/api/products/{self.product.slug}/').json()
+
+        url = data['image']
+        self.assertTrue(url, 'image URL was empty after a successful upload')
+        self.assertTrue(
+            url.startswith(('http://', 'https://', '/')),
+            f'image URL is relative and would 404 in the browser: {url!r}',
+        )
+        self.assertIn('/media/', url)
+
+    def test_a_vendor_cannot_upload_to_another_vendors_product(self):
+        """Ownership scoping must survive the new transport."""
+        from products.models import Vendor
+        other_user = User.objects.create_user('img_vendor', password='pw12345678')
+        UserProfile.objects.create(user=other_user, role='vendor')
+        Vendor.objects.create(user=other_user, shop_name='Other Img Shop')
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=bearer(other_user))
+        response = client.patch(
+            self.url(), {'image': self._png()}, format='multipart',
+        )
+        self.assertEqual(response.status_code, 404, 'must not leak the row')
+        self.product.refresh_from_db()
+        self.assertFalse(self.product.image)
+
+
+class AdminProductListCompletenessTests(TestCase):
+    """The admin catalogue list must show **every** row, not a first page of them.
+
+    This was a real defect, found by a browser check rather than by any test. The
+    endpoint used the project-wide default page size of 12, and `Product.Meta.ordering`
+    is `['-popularity_score', '-created_at']` — so a product created through the
+    dashboard's own dialog (popularity 0) sorted to the *last* page and vanished from
+    the table. The dashboard's "Total Products" card read 12 against 36 real rows.
+
+    Paginating a management list hides rows from the only person who can act on them,
+    which is the same argument `AdminReviewListView` carries for a hidden review.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            'list_admin', password='pw12345678', is_staff=True, is_superuser=True,
+        )
+        UserProfile.objects.create(user=self.admin, role=ROLE_ADMIN)
+        self.client = APIClient()
+        self.client.credentials(HTTP_AUTHORIZATION=bearer(self.admin))
+        self.category = Category.objects.create(name='Completeness Cat')
+
+    def _make(self, n, popularity=0):
+        return [
+            Product.objects.create(
+                name=f'Bulk Product {i}', description='x', price=Decimal('10'),
+                stock=1, category=self.category, popularity_score=popularity,
+            )
+            for i in range(n)
+        ]
+
+    def test_the_response_is_a_bare_list(self):
+        self._make(1)
+        data = self.client.get('/api/products/admin/products/').json()
+        self.assertIsInstance(data, list)
+        self.assertNotIn('results', data)
+
+    def test_more_than_a_page_of_products_are_all_returned(self):
+        """20 rows, default page size 12 — every one must come back."""
+        self._make(20)
+        data = self.client.get('/api/products/admin/products/').json()
+        self.assertEqual(len(data), 20)
+
+    def test_a_newly_created_product_is_present_in_the_list(self):
+        """The exact failure: a new row sorts last and used to fall off the list."""
+        existing = self._make(20, popularity=90)
+        created = self.client.post(
+            '/api/products/admin/products/',
+            {
+                'name': 'Just Created', 'description': 'x', 'price': '99',
+                'stock': 3, 'category': self.category.id, 'unit': 'piece',
+            },
+            format='multipart',
+        ).json()
+
+        data = self.client.get('/api/products/admin/products/').json()
+        ids = {row['id'] for row in data}
+        self.assertIn(created['id'], ids,
+                      'a product created through the dashboard was not in the list')
+
+    def test_vendor_scoping_still_holds_without_pagination(self):
+        """Unpaginating must not widen what a vendor can see."""
+        from products.models import Vendor
+        vendor_user = User.objects.create_user('list_vendor', password='pw12345678')
+        UserProfile.objects.create(user=vendor_user, role='vendor')
+        vendor = Vendor.objects.create(user=vendor_user, shop_name='List Shop')
+
+        mine = Product.objects.create(
+            name='Mine', description='x', price=Decimal('10'), stock=1,
+            category=self.category, vendor=vendor,
+        )
+        self._make(15)  # unowned products, plenty to fill a page
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=bearer(vendor_user))
+        data = client.get('/api/products/admin/products/').json()
+
+        self.assertEqual([row['id'] for row in data], [mine.id])

@@ -80,6 +80,16 @@ def main():
     check('config exposes a default delivery fee',
           isinstance(cfg, dict) and cfg.get('delivery_fee') is not None)
 
+    # Sweep any scratch area a previous (interrupted) run left behind, **before** the
+    # assertion below. This verifier's scratch area used to be named "Kirtipur" — a real
+    # place name with no marker — so a run killed partway through (a wedged dev server is
+    # enough) left a row that looks like legitimate data and makes the next run fail on
+    # "three valley areas seeded". `verify_day3c.py` already marks its scratch area
+    # `ZZ E2E …` and pre-cleans it; this now follows the same convention.
+    for a in rows(request('GET', '/products/admin/areas/', token=admin_tok)[1]):
+        if a.get('name', '').startswith('ZZ E2E'):
+            request('DELETE', f"/products/admin/areas/{a['id']}/", token=admin_tok)
+
     st, public_areas = request('GET', '/products/areas/')
     check('public area endpoint is 200', st == 200, f'got {st}')
     seeds = {a['slug'] for a in rows(public_areas)}
@@ -90,7 +100,7 @@ def main():
     print('\n[2] A new area is immediately usable (the "decorative model" test)')
     st, new_area = request(
         'POST', '/products/admin/areas/',
-        {'name': 'Kirtipur', 'district': 'Kathmandu', 'is_active': True},
+        {'name': 'ZZ E2E Kirtipur', 'district': 'Kathmandu', 'is_active': True},
         token=admin_tok,
     )
     check('admin can add an area', st in (200, 201), f'got {st} {new_area}')

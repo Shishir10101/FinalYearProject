@@ -39,9 +39,20 @@ leaves a working application behind it. The shopping flow already works — prot
 | Review-flow browser coverage | ✅ **added Day 11** — found a 537-request fetch loop on the product page that nothing else could see |
 | **Samagri search** | ✅ **rebuilt Day 12** — relevance-ranked, transliteration-aware, and able to reach the samagri behind a ritual or festival name |
 | Catalogue paging | ✅ **fixed Day 12** — it showed 12 of 35 products as though that were all of them |
+| **Wishlist** | ✅ **built Day 13** — model, endpoints, heart on the shared card, `/wishlist` |
+| Image upload widget | ✅ **built Day 13** — one shared `ImageField`, both dashboards |
+| Inventory integrity | ✅ **fixed Day 13.1** — cancelling an order had leaked 538 units; every reservation now has a release path |
+| Storefront coverage on **every** route | ✅ **added Day 14** — the last five routes; storefront 85 → 118 assertions |
+| Mocked payments labelled, not hidden | ✅ **done Day 14** — one constant, `PAYMENT_METHODS_ARE_MOCKED` |
+| Analytics **scope** disclosed in the dashboard | ✅ **done Day 15** — the API had returned `scope` since Day 9 and no client read it |
+| Password change, and sign-out-everywhere reachable | ✅ **done Day 15b** — both endpoints existed; neither had a caller |
+| `/analytics/inventory/` covered and surfaced | ✅ **done Day 15c** — the last endpoint nothing invoked; now a Stock Health panel |
+| Demo imagery | ✅ **done Day 16** — `manage.py fetch_demo_images`; 5 placeholder files → 52 real photos, 600×600 JPEG, attributed in `media/IMAGE-CREDITS.md` |
+| Landing-page scroll performance | ✅ **fixed Day 16** — sticky-bar `backdrop-filter`, an infinite `pulse`, unpromoted hero circles, and ~7 MB of eager images. Checked by `frontend/scripts/scroll_probe.mjs` |
+| Store name | ✅ **Day 16** — rebranded to **Puja Sewa** (the merchandise category "puja samagri" is unchanged, and is one of the six discovery entry points) |
 
 **Remaining P0 work: none.** Everything above is done and verified. What is left is P1
-(wishlist, image upload widget) and P2.
+(vendor/area analytics, a Puja-centric home landing) and P2.
 
 ---
 
@@ -348,21 +359,76 @@ throwaway account, and a stray login must not survive the run.
 
 ## P1 — after P0 is complete
 
-- Wishlist / favourites
-- Reviews and ratings (needs a new `Review` model)
-- Vendor self-service screen (API is complete and scoped; no UI exists)
-- Kit editor UI
-- Vendor analytics, area analytics
-- Puja-centric home landing (the home page still leads with a generic product grid)
-- Consistent product cards across home / products / recommendations
-- Search relevance tuning (currently `icontains`, no typo tolerance)
-- Image upload widget
-- **JWT revocation on password reset** — needs a blacklist or per-user token version
+- ✅ ~~Wishlist / favourites~~ — **done Day 13**
+- ✅ ~~Reviews and ratings (needs a new `Review` model)~~ — **done Day 11**
+- ✅ ~~Vendor self-service screen (API is complete and scoped; no UI exists)~~ — **done Day 9**
+- ✅ ~~Kit editor UI~~ — **done Day 8**
+- ✅ ~~Puja-centric home landing~~ — the home page now leads with the festival calendar and
+  ritual entry points, not a bare product grid
+- ✅ ~~Consistent product cards across home / products / recommendations~~ — **done Day 5**,
+  one shared `ProductCard`
+- ✅ ~~Search relevance tuning (currently `icontains`, no typo tolerance)~~ — **done Day 12**
+- ✅ ~~Image upload widget~~ — **done Day 13**
+- ✅ ~~**JWT revocation on password reset**~~ — **done Day 7**, via `UserProfile.token_version`
+- ✅ ~~**Vendor analytics, area analytics**~~ — **both done.** The scoping half landed Day 9
+  (`scoped_products` / `scoped_orders`, applied by every analytics view) and the per-area
+  breakdown landed Day 13.1 (`AreaBreakdownView` + the dashboard's "Orders by Delivery
+  Area" panel).
+  - **Correction (Day 15).** This line previously read *"the only P1 items still open"*,
+    which was wrong twice over. The area half was already listed as done a few rows up,
+    so the file contradicted itself. And on Day 15 I re-derived the same false conclusion
+    by a new route: I listed `analytics/urls.py`, saw no route named `vendor-*`, and
+    inferred the feature was missing. It is not — the URLs are global by name and scoped
+    by *content* (`SalesOverviewView` returns `scope: 'all' | 'vendor'`). **A route name
+    is not evidence about what a route returns.** What was genuinely broken was the
+    dashboard's *disclosure* of that scope; see Day 15 below.
+
+## P1.5 — completed on Day 15
+
+- ✅ ~~**Declare the analytics scope in the dashboard**~~ — `/analytics/sales/` and
+  `/analytics/areas/` have returned `scope: 'all' | 'vendor'` since Day 9 and **no client
+  code read it**. The same page was served to both audiences with different numbers and
+  no indication which, and the Total Revenue card was captioned with the literal string
+  `All time` for every role — so `vendor1` was shown **Rs. 1,810** (their own 3 orders)
+  under a label claiming it was their all-time *shop* revenue, when the shop-wide figure
+  was **Rs. 6,760**. The API was correct throughout; the screen was the lie.
+  - The dashboard home had also never been loaded **as a vendor** by any check — the
+    vendor section made `/reviews` its last page and never visited `/`. Same blind spot,
+    same class of bug, as the dead "create a category" button.
+
+### P1.5b — completed on Day 15c
+
+- ✅ ~~**Cover and surface `/analytics/inventory/`**~~ — built, vendor-scoped, routed and
+  documented since Day 2, with **no test and no caller**: the last analytics endpoint nothing
+  invoked. Now has 9 tests and a **Stock Health** panel on the dashboard home.
+  - The tests deliberately set their own stock. The seeded catalogue's minimum is **25** units
+    against a threshold of **10**, so every count is legitimately zero on demo data and a
+    seed-based test would pass regardless of what the code did.
+  - Contract pinned: `stock__lt=10` **includes `stock=0`**, so the low-stock and out-of-stock
+    lists are **nested, not disjoint** — anything rendering both shows those rows twice.
+  - The seeded catalogue is deliberately left alone (no low-stock item), so the panel's
+    **explained empty state** is what the demo actually shows; the low-stock branch was proven
+    with a throwaway product that was then deleted.
+
+### P1.5c — completed on Day 15c (a harness defect, not a product one)
+
+- ✅ ~~**Fix the `three seeded delivery areas are still listed` race**~~ — it failed on **2 of 3
+  consecutive runs** while all three areas were present in the database, and one run crashed
+  with no summary at all. Cause: deleting the scratch row sets `loading = true` and
+  `AreasPanel` renders `.skeleton-line` divs **instead of** the table, while the harness waited
+  only for the scratch *name* to vanish — which happens the moment the skeletons mount, before
+  the refetch returns. The next line then read `body.innerText()` against an empty panel.
+  A loading state and an empty result are indistinguishable through `innerText`. Now waits for
+  a real row, asserts the row count, and guards the previously-unguarded `waitForSelector`.
+  **I had earlier written this failure off as concurrent harnesses — it reproduces with one
+  process, and that explanation would have buried it.**
 
 ## P2 — only if P0 and P1 are done
 
-- Live eSewa/Khalti integration (the current mock marks them paid unconditionally — fine for
-  a demo, must be labelled as mocked)
+- Live eSewa/Khalti integration — **still open**, but the mock is now **labelled** as of
+  Day 14 rather than silently reporting a paid order. Flip
+  `orders.models.PAYMENT_METHODS_ARE_MOCKED` when the integration lands and every label
+  disappears on its own. See `docs/FEATURES.md` §6.1.
 - Notifications, advanced analytics, extra animation work
 
 **No P2 work while any P0 is open.**

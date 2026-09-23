@@ -3,12 +3,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.db.models import Avg, Count, Q
 from django_filters.rest_framework import DjangoFilterBackend
-from .models import Area, Category, Product, Review, Vendor
+from .models import Area, Category, Product, Review, Vendor, WishlistItem
 from .serializers import (
     AreaSerializer, VendorSerializer,
     CategorySerializer, ProductListSerializer, ProductDetailSerializer,
     ProductAdminSerializer, CategoryAdminSerializer,
     ReviewSerializer, ReviewWriteSerializer, ReviewAdminSerializer,
+    WishlistItemSerializer, WishlistWriteSerializer,
 )
 from .search import search_products
 from core.permissions import (
@@ -150,9 +151,28 @@ class AdminProductListCreateView(generics.ListCreateAPIView):
     * Vendors: only their own products. ``get_queryset`` filters by ownership,
       so a vendor cannot even enumerate another vendor's items, and a crafted
       request for a foreign id returns 404 rather than 403 (no existence leak).
+
+    ``pagination_class = None``, matching every other admin collection here — kits,
+    rituals, vendors and reviews. That is not just consistency, and it is the same
+    argument the review list carries: **paginated, a product on page 3 is invisible to
+    the only person who can edit it.** A shopkeeper who creates an item and cannot see
+    it in the table reasonably concludes the save failed.
+
+    This was not theoretical. The default page size is 12 and `Product.Meta.ordering`
+    is ``['-popularity_score', '-created_at']``, so a brand-new product (popularity 0)
+    sorts to the **last** page — the exact row most likely to need attention is the
+    one that is hidden. Measured on the seeded catalogue the dashboard showed
+    "Total Products 12" against 36 real rows, and a product created through the
+    dashboard's own dialog never appeared.
+
+    The storefront's catalogue had the same defect and was fixed on Day 12 by adding
+    paging to the UI. Here the right fix is the other one, because this is a
+    management list rather than browsable content: the dashboard needs every row for
+    its own counts, and there is no reader to page through it.
     """
     serializer_class = ProductAdminSerializer
     permission_classes = [IsStaffRole]
+    pagination_class = None
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['category', 'is_featured', 'is_active', 'vendor']
     search_fields = ['name', 'description']
@@ -473,3 +493,68 @@ class AdminReviewDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Review.objects.select_related('product', 'user')
     serializer_class = ReviewAdminSerializer
     permission_classes = [IsManager]
+
+
+# --- Wishlist --------------------------------------------------------------
+
+
+class WishlistListCreateView(APIView):
+    """The signed-in customer's saved products.
+
+    ``GET`` returns a **bare list**, unpaginated — the same shape as every other
+    item collection in this project (kits, rituals, vendors, admin reviews). A
+    wishlist is a personal shortlist that a shopper builds by hand, not browsable
+    content that grows without bound, so paging it would add a control nobody needs
+    and a page-2 the UI would have to remember to fetch.
+
+    ``POST`` is create-or-**get**, not create-or-fail. The unique constraint means a
+    second add of the same product is not a new row, and the alternative — a 400 —
+    is what a double-clicked heart button would produce. Returning the existing row
+    with 200 makes the endpoint idempotent, which is what a toggle needs. Same
+    reasoning as the create-or-update POST on reviews.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        items = (
+            WishlistItem.objects.filter(user=request.user)
+            .select_related('product', 'product__category', 'product__vendor')
+        )
+        return Response(
+            WishlistItemSerializer(items, many=True, context={'request': request}).data
+        )
+
+    def post(self, request):
+        serializer = WishlistWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        product = Product.objects.get(pk=serializer.validated_data['product_id'])
+
+        item, created = WishlistItem.objects.get_or_create(
+            user=request.user, product=product,
+        )
+        return Response(
+            WishlistItemSerializer(item, context={'request': request}).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class WishlistItemView(APIView):
+    """Remove one product from your own wishlist.
+
+    Keyed by product id rather than by the wishlist row's id, because that is what
+    the storefront has in hand — the heart sits on a product card, which knows the
+    product and not the saved row. Scoped to ``request.user``, so removing somebody
+    else's entry is a 404 rather than a 403: no existence leak, the same rule the
+    review delete follows.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, product_id):
+        deleted, _ = WishlistItem.objects.filter(
+            user=request.user, product_id=product_id,
+        ).delete()
+        if not deleted:
+            return Response({'detail': 'Not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(status=status.HTTP_204_NO_CONTENT)

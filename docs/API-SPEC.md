@@ -63,6 +63,7 @@ Endpoints with `pagination_class = None` return a bare JSON array.
 | `PUT` | `/profile/` | Any | Update own profile (partial allowed) |
 | `POST` | `/password-reset/` | Public | Request a reset link *(Day 4)* |
 | `POST` | `/password-reset/confirm/` | Public | Set a new password with uid + token. **Revokes all existing tokens** *(Day 4, Day 7)* |
+| `POST` | `/password-change/` | Any | Change your own password. Requires the **current** password; revokes all tokens on success *(Day 15)* |
 | `POST` | `/logout-all/` | Any | Sign out everywhere: revoke every token issued to the caller *(Day 7)* |
 
 ### `POST /login/`
@@ -244,6 +245,41 @@ The caller's own token is dead too, so the client must log in again.
 
 ---
 
+### `POST /password-change/`
+
+Authenticated. Changes the caller's own password.
+
+```json
+{ "current_password": "…", "new_password": "…", "new_password2": "…" }
+```
+
+The response is `200` with `reauthentication_required: true`, and **every token for the
+account is revoked — including the one that made the request.** The client must send the
+user back to the login screen; the old token is dead the moment this returns.
+
+| Failure | Status |
+|---|---|
+| Not signed in | `401` |
+| `current_password` wrong | `400` `{"current_password": ["That is not your current password."]}` |
+| `new_password` == `current_password` | `400` (rejected, never reported as a successful no-op) |
+| `new_password` ≠ `new_password2` | `400` |
+| `new_password` fails `AUTH_PASSWORD_VALIDATORS` | `400` |
+
+> **Why `current_password` is required.** The caller is already authenticated, so without
+> it a **stolen access token alone** would be enough to lock the owner out permanently. With
+> it, the token is necessary but not sufficient. This is deliberately *stricter* than the
+> reset flow, which does not ask — possessing an emailed reset link is itself proof of
+> mailbox control, so the two are not equivalent.
+>
+> Throttled with `PasswordResetThrottle`: `current_password` is checked against a real
+> account, which makes this a password-guessing surface.
+
+> **Reached from** `/account` → the Account Security panel. `/logout-all/` above had existed
+> since Day 7 and is documented here as a user-facing action, but no client called it until
+> Day 15 — a capability the product could not reach.
+
+---
+
 ## 2. Catalogue — `/api/products/`
 
 ### Public
@@ -380,14 +416,60 @@ Parameters: `q` (or `search`) · `category=<id>` narrows before ranking · `page
 > converter may sit above a literal path of the same depth.** `products/urls.py` is now
 > ordered public literals → admin → slug patterns.
 
+### Wishlist *(added Day 13)*
+
+| Method | Path | Required role | Notes |
+|---|---|---|---|
+| `GET` | `/wishlist/` | authenticated | Your own saved products. **A bare array**, unpaginated |
+| `POST` | `/wishlist/` | authenticated | `{ "product_id": 12 }`. Create-or-**get** |
+| `DELETE` | `/wishlist/<product_id>/` | authenticated | Keyed by **product** id, not the wishlist row id |
+
+`GET /products/wishlist/`:
+
+```json
+[
+  {
+    "id": 7,
+    "created_at": "2026-09-22T10:20:00Z",
+    "product": {
+      "id": 12, "name": "Brass Diyo (Oil Lamp)", "slug": "brass-diyo-oil-lamp",
+      "price": "450.00", "stock": 25, "image": "http://127.0.0.1:8000/media/products/…",
+      "category": 3, "category_name": "Puja Essentials", "vendor": 1,
+      "vendor_name": "Patan Puja Bhandar", "is_featured": true, "in_stock": true,
+      "popularity_score": 92, "unit": "piece"
+    }
+  }
+]
+```
+
+- **A bare array, not `{ count, results }`.** The storefront maps over it directly. This
+  matches every other item collection here (kits, rituals, vendors, admin reviews), and it is
+  the one shape difference a client cannot paper over with a `.results || data` guard if it
+  forgets — hence the explicit note.
+- **`product` is nested**, not an id. Every screen that reads a wishlist renders the product,
+  and it is exactly the shape `ProductListSerializer` produces — so the wishlist page and the
+  catalogue cannot drift apart.
+- **`POST` is create-or-get.** `unique_together ('user', 'product')` means a second add is not
+  a new row, and the control that calls it is a toggle — so a double-clicked heart returns
+  `200` with the existing row rather than a `400` the UI would have to translate.
+- **`DELETE` takes a product id.** The heart lives on a product card, which knows the product
+  and not the saved row. Removing an entry you do not own is a `404`, not a `403` — no
+  existence leak, the same rule as the review delete.
+- **`product_id` must reference an active product**, or a saved card would link to a page that
+  404s. `user` is not writable, so a client cannot write into somebody else's list.
+
+`is_wishlisted` is published on `GET /products/<slug>/` (and only there — not on the list
+serializer, which would mean an annotation on every product list in the project for the
+benefit of one button). The card's heart answers from a client-side id set loaded once.
+
 ### Admin — vendor-scoped
 
 | Method | Path | Required role | Notes |
 |---|---|---|---|
-| `GET` | `/admin/products/` | any staff | Vendors see **only their own**; managers see all |
-| `POST` | `/admin/products/` | any staff | A vendor's product is force-attributed to them |
+| `GET` | `/admin/products/` | any staff | Vendors see **only their own**; managers see all. **Unpaginated** (Day 13) |
+| `POST` | `/admin/products/` | any staff | A vendor's product is force-attributed to them. **Multipart** accepted for `image` |
 | `GET` | `/admin/products/<id>/` | any staff | 404 if not yours |
-| `PATCH` | `/admin/products/<id>/` | any staff | 404 if not yours |
+| `PATCH` | `/admin/products/<id>/` | any staff | 404 if not yours. Multipart accepted; `image: null` (JSON) clears the image |
 | `DELETE` | `/admin/products/<id>/` | any staff | 404 if not yours |
 | `GET`/`POST` | `/admin/categories/` | read: any staff · write: **manager** | Vendors may read the taxonomy |
 | `GET`/`PATCH`/`DELETE` | `/admin/categories/<id>/` | read: any staff · write: **manager** | |
@@ -447,17 +529,43 @@ Before this, "Add a vendor" attached a shop to an account that still resolved as
 `GET /config/` →
 
 ```json
-{ "delivery_fee": 100, "free_delivery_threshold": null, "currency": "NPR" }
+{
+  "delivery_fee": 100,
+  "free_delivery_threshold": null,
+  "currency": "NPR",
+  "areas": [
+    { "id": 1, "name": "Kathmandu", "slug": "kathmandu", "district": "Kathmandu",
+      "delivery_fee": 100, "is_override": false }
+  ],
+  "payment_methods": [
+    { "value": "cod",    "label": "Cash on Delivery", "is_mocked": false },
+    { "value": "esewa",  "label": "eSewa",            "is_mocked": true  },
+    { "value": "khalti", "label": "Khalti",           "is_mocked": true  }
+  ],
+  "any_payment_mocked": true
+}
 ```
 
-Delivery areas are **not** in this payload — fetch them from `GET /products/areas/`.
+**Delivery areas** are also served from here (with their fee overrides) so the
+checkout page can show the correct total the moment an area is chosen. The public
+`GET /products/areas/` list remains the management-facing one.
 `free_delivery_threshold` is `null`, meaning "no free-delivery offer"; the field
 exists so the storefront does not need a code change to add one.
+
+**`payment_methods[].is_mocked`** *(added Day 14)* is a disclosure, not a setting a
+client may override. `esewa` and `khalti` are **simulated** — `POST /checkout/` marks
+such an order `paid` and `confirmed` without contacting a gateway. The flag comes from
+one constant, `orders.models.PAYMENT_METHODS_ARE_MOCKED`, so the API and both
+frontends cannot disagree about which methods are real. `cod` is `false`: cash is
+genuinely collected on delivery. The storefront renders a warning from this before
+the customer chooses, and the order detail repeats it. `any_payment_mocked` exists
+so the UI can render one banner without re-deriving it from the list.
 
 **Why this endpoint exists.** On Day 1 the delivery fee lived in three places
 (frontend constant, backend default, and nowhere in the stored order), and order
 #9 recorded Rs. 290 while the UI promised Rs. 390. The fee is now served from a
-single setting and stored on the order.
+single setting and stored on the order. The payment flags were added for the same
+reason: a fact two frontends must agree on belongs in one place.
 
 ### Cart — authenticated
 
@@ -786,9 +894,9 @@ products and carry `"scope": "vendor"`.
 |---|---|---|
 | `GET` | `/sales/` | Revenue, order counts, 30-day daily series |
 | `GET` | `/trending/` | Top products by popularity |
-| `GET` | `/inventory/` | Stock levels, low-stock and out-of-stock lists |
-| `GET` | `/predictions/` | Actionable alerts (festival, inventory, forecast) |
+| `GET` | `/inventory/` | Stock levels, low-stock and out-of-stock lists || `GET` | `/predictions/` | Actionable alerts (festival, inventory, forecast) |
 | `GET` | `/demand-forecast/` | **Per-product demand forecast** |
+| `GET` | `/areas/` | **Orders and revenue by delivery area** *(added Day 13)* |
 
 ### `GET /sales/`
 
@@ -808,6 +916,68 @@ products and carry `"scope": "vendor"`.
 ```
 
 `scope` is `"all"` for managers, `"vendor"` for vendors.
+
+### `GET /areas/` *(added Day 13)*
+
+```json
+{
+  "scope": "all",
+  "totals": { "orders": 8, "revenue": 8420.0, "cancelled": 1 },
+  "areas": [
+    { "slug": "kathmandu", "name": "Kathmandu", "district": "Kathmandu",
+      "is_configured": true, "orders": 5, "cancelled_orders": 1,
+      "revenue": 5200.0, "share_percent": 61.8 },
+    { "slug": "pokhara", "name": "Pokhara", "district": "",
+      "is_configured": false, "orders": 1, "cancelled_orders": 0,
+      "revenue": 400.0, "share_percent": 4.8 }
+  ],
+  "note": "Revenue includes cancelled orders, matching /analytics/sales/, so the rows sum to that endpoint's total_revenue."
+}
+```
+
+- **The rows sum to `/sales/`'s `total_revenue`.** That is a contract, not a coincidence:
+  two dashboard panels that disagree make both numbers untrustworthy. Cancelled orders are
+  included so the arithmetic holds, and exposed separately as `cancelled_orders` so the reader
+  can still judge how much of a row never completed.
+
+### `GET /inventory/` *(surfaced Day 15c)*
+
+Built and routed since Day 2, but **nothing called it and nothing tested it** until Day 15c.
+Vendor-scoped through `scoped_products`, so a vendor sees stock for their own products only.
+
+```json
+{
+  "scope": "all",
+  "total_products": 35,
+  "total_stock_units": 4725,
+  "low_stock_threshold": 10,
+  "low_stock_count": 0,
+  "out_of_stock_count": 0,
+  "low_stock_products": [],
+  "out_of_stock_products": []
+}
+```
+
+**The two lists are nested, not disjoint.** The filter is `stock__lt=10`, which includes
+`stock == 0`, so **every out-of-stock product also appears in `low_stock_products`**. A screen
+rendering both lists will show those rows twice; a client that wants them separated must
+subtract one from the other.
+
+`low_stock_products` is **capped at 20 rows** while `low_stock_count` reports the true total —
+read the count, not `len()`, when the list is truncated.
+
+On the seeded catalogue every count is legitimately zero: the **minimum stock is 25 units**
+against a threshold of **10**. That is why the dashboard panel has an explicit empty state
+saying nothing needs restocking, rather than a blank box that reads as a failed load.
+- **`shipping_city` stores the area *slug*** (`kathmandu`/`lalitpur`/`bhaktapur`), so `name`
+  and `district` are resolved from the `Area` table for display.
+- **An order whose city no longer matches an `Area` row is still reported**, with
+  `is_configured: false`. Silently dropping it would make the rows stop summing to the
+  headline figure.
+- **Areas with no orders are listed at zero.** "Which configured areas have never been ordered
+  from" is the actionable half of this report.
+- **Vendor-scoped.** A vendor sees only orders containing their own products, so the same
+  endpoint answers both "which areas do we deliver to most" and "where do my customers live".
 
 ### `GET /demand-forecast/`
 

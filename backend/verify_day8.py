@@ -235,7 +235,14 @@ def test_kit_authoring(admin, products):
 
     kit_id = kit['id']
     check('a new kit starts with no items', kit.get('item_count') == 0, f'kit={kit}')
-    check('the image field is not part of the JSON payload', 'image' not in kit)
+    # Inverted on Day 13, deliberately. This check used to read
+    # `'image' not in kit`, because a JSON form cannot set a file field and the field
+    # was therefore left out of the write payload entirely. The dashboard now uploads
+    # multipart, so the field is included and the original guarantee no longer holds.
+    # Asserting the *new* contract rather than deleting the check keeps the change
+    # visible: the old promise is gone, and this says so.
+    check('the image field is part of the payload (reversed on Day 13)',
+          'image' in kit, f'kit keys={sorted(kit.keys())}')
 
     status, body = request('GET', '/api/festivals/admin/kits/', admin)
     check('it appears in the admin list',

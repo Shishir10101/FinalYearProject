@@ -158,7 +158,8 @@ class RecommendationsView(APIView):
         result = Recommender(user=request.user).build(limit=limit)
 
         products = serialize_recommendations(
-            result['recommended_products'], ProductListSerializer
+            result['recommended_products'], ProductListSerializer,
+            context={'request': request},
         )
         upcoming = UpcomingFestivalSerializer(result['upcoming_festivals'], many=True)
 

@@ -1,13 +1,13 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import permissions
-from django.db.models import Sum, Count
+from django.db.models import Sum, Count, Q, Exists, OuterRef
 from django.utils import timezone
 from datetime import timedelta
 from collections import defaultdict
 
 from orders.models import Order, OrderItem
-from products.models import Product, Category
+from products.models import Product, Category, Area
 from festivals.models import UpcomingFestival
 
 from .forecasting import (
@@ -36,14 +36,32 @@ def scoped_products(user):
 
 
 def scoped_orders(user):
-    """Order queryset limited to orders containing ``user``'s products."""
+    """Order queryset limited to orders containing ``user``'s products.
+
+    Scoped with an ``Exists`` subquery rather than
+    ``filter(items__product__vendor=vendor).distinct()``. The join version reads
+    correctly and is **wrong for any grouped aggregate**: a vendor with two items in
+    one order produces two rows, so ``values('shipping_city').annotate(Sum(...))``
+    counted that order's total twice. Measured on the seeded data, a vendor with
+    390 + 580 + 840 of orders reported **2780** instead of 1810.
+
+    ``.distinct()`` does not save it — Django applies DISTINCT to the grouped rows, so
+    the duplication survives into the aggregate. A plain ``.aggregate()`` on the same
+    queryset happened to be correct, which is exactly what made this dangerous: the
+    bug was invisible until something grouped by a second column.
+
+    ``Exists`` produces no join at all, so every consumer — ``count()``, a flat
+    ``aggregate()``, and a ``values().annotate()`` — is correct by construction.
+    """
     qs = Order.objects.all()
     if is_manager(user):
         return qs
     vendor = vendor_for(user)
     if vendor is None:
         return qs.none()
-    return qs.filter(items__product__vendor=vendor).distinct()
+    return qs.filter(
+        Exists(OrderItem.objects.filter(order=OuterRef('pk'), product__vendor=vendor))
+    )
 
 
 class SalesOverviewView(APIView):
@@ -396,4 +414,104 @@ class DemandForecastView(APIView):
                 ),
                 'horizon_days': horizon,
             },
+        })
+
+
+class AreaBreakdownView(APIView):
+    """Orders and revenue grouped by delivery area.
+
+    The second half of the P1 item "vendor / per-area analytics". Vendor scoping was
+    built on Day 9 — `scoped_orders` already limits a vendor to orders containing
+    their own products — but nothing anywhere broke demand down by **where it is
+    going**. For a business whose whole delivery promise is "Kathmandu Valley", that
+    is the question that decides where a second rider goes, and there was no way to
+    ask it.
+
+    **Deliberately consistent with `/analytics/sales/`.** That view counts every
+    order, cancelled ones included, so `revenue` here does too — the sum of the rows
+    equals its `total_revenue`. A panel whose parts do not add up to the headline
+    figure above them is worse than no panel, because it makes both numbers
+    untrustworthy. The cancelled count is exposed as its own column so the reader can
+    judge how much of a row is cancellations without the totals disagreeing.
+
+    Areas with **no orders are included**, at zero. "Which configured areas have never
+    been ordered from" is exactly the actionable half of this report — omitting them
+    would hide the answer.
+    """
+
+    permission_classes = [IsStaffRole]
+
+    def get(self, request):
+        orders = scoped_orders(request.user)
+
+        rows = (
+            orders.values('shipping_city')
+            .annotate(
+                order_count=Count('id'),
+                revenue=Sum('total_amount'),
+                cancelled_count=Count('id', filter=Q(status='cancelled')),
+            )
+        )
+
+        # `shipping_city` stores the Area *slug* (the three seeded slugs are
+        # byte-identical to the old CITY_CHOICES enum so historical orders still
+        # resolve). Name and district are looked up so the dashboard can show
+        # "Lalitpur" rather than "lalitpur".
+        area_by_slug = {a.slug: a for a in Area.objects.all()}
+
+        totals = {
+            'orders': sum(r['order_count'] for r in rows),
+            'revenue': float(sum((r['revenue'] or 0) for r in rows)),
+            'cancelled': sum(r['cancelled_count'] for r in rows),
+        }
+
+        by_slug = {}
+        for row in rows:
+            slug = row['shipping_city'] or ''
+            area = area_by_slug.get(slug)
+            by_slug[slug] = {
+                'slug': slug,
+                # An order can carry a city that no longer matches an Area — an area
+                # renamed, or one deleted after the order was placed. Falling back to
+                # the raw value keeps that order in the report instead of silently
+                # dropping it and making the totals stop adding up.
+                'name': area.name if area else (slug.replace('-', ' ').title() or 'Unspecified'),
+                'district': area.district if area else '',
+                'is_configured': area is not None,
+                'orders': row['order_count'],
+                'cancelled_orders': row['cancelled_count'],
+                'revenue': float(row['revenue'] or 0),
+            }
+
+        # Add the configured areas that have no orders at all.
+        for area in area_by_slug.values():
+            if area.slug not in by_slug:
+                by_slug[area.slug] = {
+                    'slug': area.slug,
+                    'name': area.name,
+                    'district': area.district,
+                    'is_configured': True,
+                    'orders': 0,
+                    'cancelled_orders': 0,
+                    'revenue': 0.0,
+                }
+
+        breakdown = sorted(
+            by_slug.values(), key=lambda r: (-r['revenue'], r['name']),
+        )
+        for row in breakdown:
+            row['share_percent'] = (
+                round(row['revenue'] / totals['revenue'] * 100, 1)
+                if totals['revenue'] else 0.0
+            )
+
+        return Response({
+            'scope': 'all' if is_manager(request.user) else 'vendor',
+            'totals': totals,
+            'areas': breakdown,
+            'note': (
+                'Revenue includes cancelled orders, matching /analytics/sales/, so '
+                'the rows sum to that endpoint\'s total_revenue. Compare '
+                'cancelled_orders to judge how much of a row never completed.'
+            ),
         })

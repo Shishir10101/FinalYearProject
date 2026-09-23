@@ -206,3 +206,71 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         user.set_password(self.validated_data['new_password'])
         user.save(update_fields=['password'])
         return user
+
+
+class PasswordChangeSerializer(serializers.Serializer):
+    """Change the password of an already-authenticated user.
+
+    **Why this exists.** Until now the only way to change a password was the
+    forgot-password flow, which requires access to the account's email and asserts
+    you *forgot* the password. A signed-in customer who simply wanted a different
+    password had no screen and no endpoint at all — so the only remedy for "I want
+    to change my password" was to pretend to have lost it.
+
+    **Why the current password is required.** This is the difference between a
+    convenience and a hole. The caller is already authenticated, so without
+    `current_password` any stolen access token could be escalated into permanent
+    account takeover: the thief would change the password and lock the owner out
+    for good. With it, a stolen token alone is not enough — and note that the
+    forgotten-password flow does *not* have this problem, because possessing an
+    emailed reset link is itself proof of mailbox control.
+
+    Not a `ModelSerializer`: there is no model field to write directly, and the
+    password never round-trips through the API.
+    """
+
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True)
+    new_password2 = serializers.CharField(write_only=True)
+
+    def validate(self, data):
+        user = self.context['request'].user
+
+        if not user.check_password(data['current_password']):
+            # The same message whether the account has a usable password or not. A
+            # user created by `createsuperuser` always does; one created some other
+            # way might not, and a distinct "no password set" reply would describe
+            # the account's internals to whoever asked.
+            raise serializers.ValidationError(
+                {'current_password': 'That is not your current password.'}
+            )
+
+        if data['new_password'] != data['new_password2']:
+            raise serializers.ValidationError(
+                {'new_password2': 'The two passwords do not match.'}
+            )
+
+        if data['new_password'] == data['current_password']:
+            # Rejected rather than silently accepted. "Changed" implies something
+            # changed, and a no-op that reports success is the kind of dishonest
+            # confirmation this project keeps having to remove.
+            raise serializers.ValidationError(
+                {'new_password': 'Your new password must be different from your '
+                                 'current one.'}
+            )
+
+        # Django's configured validators, not a length rule — the same treatment
+        # reset and registration get, so this cannot set a weaker password than
+        # either of them would allow.
+        try:
+            validate_password(data['new_password'], user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'new_password': list(exc.messages)})
+
+        return data
+
+    def save(self, **kwargs):
+        user = self.context['request'].user
+        user.set_password(self.validated_data['new_password'])
+        user.save(update_fields=['password'])
+        return user

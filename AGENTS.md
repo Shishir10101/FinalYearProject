@@ -10,8 +10,12 @@ broken, and what is missing. This file holds the rules for changing it.
 
 ## 1. Project purpose
 
-An Online **Puja Samagri** e-commerce platform for **Kathmandu Valley**
+An Online **Puja Sewa** e-commerce platform for **Kathmandu Valley**
 (Kathmandu, Lalitpur, Bhaktapur), Nepal.
+
+The store trades as **Puja Sewa**; **puja samagri** is what it sells (the merchandise
+category, and the name of one of the six discovery entry points below). Do not conflate
+the two — a rebrand must not rename the domain concept.
 
 The differentiator is the **Puja/Festival domain**, not generic retail. Discovery must work
 through **six** entry points, not just a product grid:
@@ -73,6 +77,13 @@ Two AI components are **required**, separate from each other:
 > response has already started streaming (a `loading.js` or any `await` opens that boundary).
 > Next injects `<meta name="robots" content="noindex">` as the mitigation. See
 > `dist/docs/01-app/02-guides/streaming.md`.
+>
+> **This is live in this project, not hypothetical.** `/pujas/[slug]` calls `notFound()` for an
+> unknown ritual and returns **200**, because `src/app/pujas/loading.js` opens a Suspense
+> boundary — verified with `curl -o /dev/null -w '%{http_code}'`. Two comments used to claim it
+> returned a real 404. If you need a genuine 404 status on a route, the `loading.js` has to go,
+> and the loading skeleton is usually worth more than the status code. **Assert the
+> user-visible behaviour and the `noindex`; do not assert `status === 404` on a streamed route.**
 
 ---
 
@@ -131,6 +142,12 @@ truth for who may do what). See §8.
   **Never change those three slugs** without a data migration.
 - `KitItem` has `is_required` — this is the **Required Samagri** mechanism. Use it.
 - `OrderItem` **snapshots** `product_name` and `price`. Never replace this with a live FK read.
+- **`WishlistItem`** (Day 13) is one row per `(user, product)`, with `product` as **`CASCADE`** —
+  the opposite of `OrderItem`'s `SET_NULL` + snapshot, and deliberately so: a wishlist row is a
+  pointer to something you intend to buy, so if the product goes there is nothing left to save,
+  whereas an order is a record of a past transaction that must outlive the product.
+  `POST /api/products/wishlist/` is create-or-**get**, because the control that calls it is a
+  toggle and a double-clicked heart must not be a `400`.
 - **`Puja` is the ritual; `FestivalKit` is one purchasable bundle that serves it.** They are
   deliberately separate. `FESTIVAL_CHOICES` conflates calendar festivals (`dashain`, `tihar`,
   `shivaratri`) with rites of passage (`bratabandha`, `pasni`, `griha_pravesh`, `shraddha`), and
@@ -187,6 +204,11 @@ truth for who may do what). See §8.
   **last** public pattern. It was missing entirely at one point, which made the whole
   product detail page 404; it must stay below `featured/`, `categories/`, and `areas/`
   or it will shadow those literal paths.
+- The rule is stronger than "the slug route goes last": **nothing with a slug converter may sit
+  above a literal path of the same depth.** `<slug:slug>/reviews/` matched `admin/reviews/` with
+  `slug='admin'` and 404'd that entire API. `wishlist/` (Day 13) is a valid slug too, so it sits
+  with the other public literals. Adding a route? Put it with its family, never above the slug
+  patterns.
 - `festivals/urls.py` nests its slug pattern under a prefix (`pujas/<slug:slug>/`), so
   it cannot shadow the literal `pujas/` — unlike the flat `products/urls.py` case above.
   Keep it that way.
@@ -266,10 +288,25 @@ venv/Scripts/python.exe manage.py runserver 8000      # :8000
 venv/Scripts/python.exe manage.py makemigrations
 venv/Scripts/python.exe manage.py migrate
 venv/Scripts/python.exe manage.py seed_data           # reseeds admin/…/testuser
-venv/Scripts/python.exe manage.py test                # 336 tests
+venv/Scripts/python.exe manage.py test                # 498 tests
 venv/Scripts/python.exe manage.py refresh_festivals   # rebuild the festival calendar
 venv/Scripts/python.exe manage.py seed_pujas          # derive rituals from kit/product data
 venv/Scripts/python.exe manage.py generate_synthetic_sales   # SYNTHETIC forecast data
+
+# Demo imagery — fetches freely-licensed photos from Wikimedia Commons, crops them
+# square and re-encodes to 600x600 JPEG q82 (~40-70 KB, versus ~700 KB before), and
+# writes attribution to media/IMAGE-CREDITS.md. Never leaves a row without an image:
+# anything it cannot find gets a locally drawn tile carrying the item's name.
+#   Commons rate-limits (429) — it backs off and retries; --retry-fallbacks re-tries
+#   only the rows that still hold a tile. --match "<substring>" re-fetches one row.
+#   A wrong photo is worse than a tile, so near-miss titles are rejected by keyword
+#   (Commons returns *conch fritters* for "conch shell", *coconut cookies* for
+#   "dried coconut"). Verify the result by LOOKING at it, not by counting files.
+venv/Scripts/python.exe manage.py fetch_demo_images          # products+categories+kits
+venv/Scripts/python.exe manage.py fetch_demo_images --force  # re-fetch everything
+venv/Scripts/python.exe manage.py fetch_demo_images --retry-fallbacks
+venv/Scripts/python.exe manage.py fetch_demo_images --match "Kalash,Bell"
+venv/Scripts/python.exe manage.py fetch_demo_images --dry-run
 
 # Remove scratch rows left by the verifiers (always run after a verification sweep)
 venv/Scripts/python.exe manage.py purge_verification_orders   # --dry-run supported
@@ -277,10 +314,14 @@ venv/Scripts/python.exe manage.py purge_verification_users    # --dry-run suppor
 venv/Scripts/python.exe manage.py purge_verification_reviews  # --dry-run supported
 
 # Live end-to-end verification (server must already be running on :8000)
+#   Run the server with --noreload for a sweep. Editing any .py in backend/ makes the
+#   autoreloader restart the child, and a child that dies mid-reload leaves the parent
+#   holding :8000 and answering nothing (curl exits 56 with an empty body). That looks
+#   exactly like a broken endpoint. If it happens: kill the listener, restart.
 venv/Scripts/python.exe verify_day2.py                # 68 assertions
-venv/Scripts/python.exe verify_day3.py                # 55 assertions — roles & CRUD
+venv/Scripts/python.exe verify_day3.py                # 57 assertions — roles & CRUD
 venv/Scripts/python.exe verify_day3b.py               # 41 assertions
-venv/Scripts/python.exe verify_day3c.py               # 128 assertions — full shopping flow
+venv/Scripts/python.exe verify_day3c.py               # 129 assertions — full shopping flow
 venv/Scripts/python.exe verify_day4.py                # 88 assertions — history, reset, validation
 venv/Scripts/python.exe verify_day6.py                # 40 assertions — the ritual entry point
 venv/Scripts/python.exe verify_day7.py                # 30 assertions — token revocation
@@ -288,6 +329,8 @@ venv/Scripts/python.exe verify_day8.py                # 74 assertions — kit & 
 venv/Scripts/python.exe verify_day9.py                # 49 assertions — vendor administration
 venv/Scripts/python.exe verify_day11.py               # 68 assertions — reviews & moderation
 venv/Scripts/python.exe verify_day12.py               # 84 assertions — search & ranking
+venv/Scripts/python.exe verify_day13.py               # 68 assertions — wishlist, uploads, areas
+venv/Scripts/python.exe verify_day14.py               # 21 assertions — mocked-payment disclosure
 
 # Real-browser checks (dashboard on :3001, storefront on :3000, API on :8000).
 # These are the ONLY checks that can see a client-side render failure: `AuthGate`
@@ -295,15 +338,33 @@ venv/Scripts/python.exe verify_day12.py               # 84 assertions — search
 # empty shell. They drive the Edge already on the machine via playwright-core, so
 # there is no Chromium download and nothing is added to package.json. One-time setup:
 #   mkdir -p /tmp/harness && cd /tmp/harness && npm init -y && npm install playwright-core
+#
+# ON WINDOWS, NODE_PATH MUST BE A WINDOWS PATH. Node resolves NODE_PATH itself and does
+# not understand Git-Bash's /tmp mount, so `/tmp/harness/node_modules` fails with
+# `Cannot find module 'playwright-core'` although the package is installed. Resolve it
+# once with `pwd -W` inside the harness directory (here it is
+# C:\Users\dell\AppData\Local\Temp\harness\node_modules) and use that.
+#   Windows:  NODE_PATH='C:\Users\<you>\AppData\Local\Temp\harness\node_modules'
+#   Linux/mac: NODE_PATH=/tmp/harness/node_modules
+# SHOT_DIR must be a Windows path for the same reason.
 cd admin-dashboard
-NODE_PATH=/tmp/harness/node_modules node scripts/browser_check.mjs      # 64 assertions
+NODE_PATH=<harness>/node_modules node scripts/browser_check.mjs      # 119 assertions
 cd ../frontend
-NODE_PATH=/tmp/harness/node_modules node scripts/storefront_check.mjs   # 79 assertions
+NODE_PATH=<harness>/node_modules node scripts/storefront_check.mjs   # 136 assertions
 # The storefront check places ONE real order; clean it up with
 #   cd backend && venv/Scripts/python.exe manage.py purge_verification_orders
 # The dashboard check seeds one review through the API and removes it again; the
 # storefront check posts one and deletes it through the UI. If either is interrupted
 # mid-section: manage.py purge_verification_reviews
+#
+# Scroll smoothness (needs the storefront on :3000, production build):
+NODE_PATH=<harness>/node_modules node scripts/scroll_probe.mjs
+# It scrolls the whole page in a real browser and counts frames over 50 ms, and also
+# reports broken/relative <img> sources. Baseline: 0 long frames of 354, worst ~22 ms,
+# 0 broken, 0 relative. Neither the unit tests nor storefront_check.mjs can see a
+# scroll regression — they assert content, not smoothness — so this is the only check
+# standing behind the four jank fixes (sticky-bar backdrop-filter, infinite pulse,
+# unpromoted rotating hero circles, eager ~700 KB images).
 #
 # Run them against a PRODUCTION build (`npm run build && npx next start -p <port>`),
 # not `next dev`. Under `next dev` the HMR websocket fails in the sandbox and the
@@ -532,12 +593,60 @@ rules it overrides.
     `Category.save()` must stay as the last-resort net — it exists because a duplicate slug was
     an unhandled `IntegrityError` (HTTP 500) — but it must never be the *only* guard, or a
     duplicate name is silently filed as `name-1` and one category becomes two.
+11. **Never scope a queryset with a multi-valued join if anything will group it.**
+    `filter(items__product__vendor=vendor)` looks right and is wrong: an order holding two of
+    that vendor's products produces **two rows**, so a later
+    `values('shipping_city').annotate(Sum('total_amount'))` counts that order's total twice.
+    `.distinct()` does **not** save it — Django applies DISTINCT to the grouped rows, so the
+    duplication survives into the aggregate. It was invisible because a flat `.aggregate()` on
+    the same queryset was correct, and only a panel that cross-checked two figures exposed it
+    (measured: **2780 where the truth was 1810**). Scope with
+    `Exists(Child.objects.filter(parent=OuterRef('pk'), …))` instead — no join, so `count()`,
+    a flat `aggregate()` and a grouped `annotate()` are all correct by construction.
+    `VendorOrderScopingTests` guards it.
+12. **Every path that reserves stock must have a path that releases it.**
+    `CheckoutView` decrements `product.stock` per line. Cancelling an order and deleting one
+    both used to leave that decrement in place, so inventory leaked permanently — **538 units
+    across 23 products** before anyone noticed, which then produced false low-stock and
+    restock alerts. Cancelling now calls `release_order_stock()`; reinstating calls
+    `reserve_order_stock()` and is **refused with a 400** if the stock is gone; the purge
+    command releases stock for orders that still hold a reservation and skips already-cancelled
+    ones (so nothing is returned twice). **`purge_verification_users` needs it too** —
+    `Order.user` is `CASCADE`, so deleting a probe account silently deletes its orders as a side
+    effect, and that was the *third* path with the same flaw. Any new path that creates, cancels
+    or deletes an order has to answer the same question: does it reserve, and does it release?
+13. **`popularity_score` is a demand signal, and it steers the AI.** It is incremented only by
+    `CheckoutView`, and cancellation deliberately does **not** reverse it — a cancelled order
+    still means a customer asked for something. A *fixture* order means nobody did, so
+    `purge_verification_orders` reverses it for every verification order it deletes (floored at
+    zero — it is a `PositiveIntegerField`). Leaving it in place had reached **591 points across
+    23 products**, and the field feeds the recommender's popularity bonus, the trending list,
+    the default catalogue ordering and the search tie-break — so the demo was recommending
+    whatever the test suite happened to buy. Repair existing drift with
+    `seed_data --reset-popularity`.
+14. **A management command only exists if its app is in `INSTALLED_APPS`.**
+    `core/` is the *project* package (`settings.py`, `urls.py`, `wsgi.py`) and is not installed,
+    so a `seed_data.py` living there was dead code — while the docs told contributors to edit
+    exactly that one. The two copies drifted, and the live one had lost its `seed_pujas` call,
+    so a fresh install came up with **zero rituals**. There is now one copy, under `products/`.
+    If a command seems to ignore your change, check `get_commands()`.
 
 **`CITY_CHOICES` now lives only in `core/constants.py`** (Day 3). `Area` rows superseded it for
 delivery; import the constant rather than adding another copy.
 
-**`seed_data` exists twice** — `core/management/commands/` and `products/management/commands/`,
-byte-identical. Only `core`'s runs. If you change seeding, change `core`'s; delete the other.
+**`seed_data` exists once**, at `products/management/commands/seed_data.py`. It used to
+exist twice — a second copy at `core/management/commands/` — and the guidance here said
+"only `core`'s runs", **which was backwards**. `core/` is the Django *project* package
+(`settings.py`, `urls.py` and `wsgi.py` live there) and is **not** in `INSTALLED_APPS`, so
+Django never discovered its commands: that copy was dead code, and the file the docs told
+you to edit had no effect. The two had silently diverged — the live copy never called
+`seed_pujas`, so a fresh install came up with **0 rituals**, and the Puja entry point
+(one of the six §1 requires) existed only on databases where somebody had run
+`seed_pujas` by hand. The dead copy is deleted; `SeedDataCompletenessTests` asserts that a
+plain `seed_data` produces every entry point.
+
+> A management command only exists if its app is in `INSTALLED_APPS`. Check
+> `get_commands()` when a command seems to ignore your change.
 
 ---
 
@@ -761,6 +870,26 @@ Global utilities — **already defined, do not re-implement per page**:
     successful checkout the cart is empty by design, and the guard watching for an empty
     cart raced the push to the order confirmation — the order was placed and the customer
     landed on an empty cart. `/checkout` sets `placed` before calling `loadCart()`.
+12. **A failed write is not a failed load.** Do not let one state variable serve both. On
+    `/orders`, a rejected status PATCH set the same `error` that the *load* failure uses, so
+    one refused write replaced the whole table with a block headed "Could not load orders" —
+    a message that was untrue, and it destroyed the list the admin was working through.
+    Keep them apart: a **load** failure may replace the screen, a **write** failure gets a
+    dismissible notice (`flash(text, kind)`, self-clearing) and the data stays on screen.
+    Asserted by the dashboard browser check, which forces a 400 with a route intercept.
+13. **A write-triggered refresh must not blank the data.** The same screen refetched its
+    list after a status change to update one "Last change" cell, and that refetch toggled
+    `loading`, dropping the table to skeletons every time. Give the refresh a `silent`
+    option that skips the loading state; the optimistic update already covers the row.
+14. **Never write `onClick={handler}` when the handler takes an argument.** React passes the
+    click event as the first parameter. `onClick={c.save}` on the settings screen handed the
+    event to `save(override)`, which used it as the payload — so `JSON.stringify` ran on a
+    synthetic event, threw on its circular structure, and **the request never fired**.
+    Creating a category from the dashboard was simply broken, and the *other* tab worked
+    because it called a local wrapper that built its payload explicitly. Write
+    `onClick={() => handler()}`, and guard the handler (a React event always carries
+    `nativeEvent`; a payload never does) so the mistake cannot silently recur.
+    The dashboard browser check now does a create → assert → delete round trip on both tabs.
 
 ### Animation rules
 Subtle, fast, purposeful, performant. Animations are **already in place** — extend, don't pile on.
@@ -897,11 +1026,13 @@ Minimum loop for any change:
 Keep it in `docs/CURRENT-STATE.md`.
 
 Django tests live in `backend/<app>/tests.py` plus `backend/core/tests_roles.py`.
-There are now **379**, covering the recommender (30), the forecaster (33), the
+There are now **471**, covering the recommender (30), the forecaster (33), the
 role/scoping system (64), order status history (23), password reset (25),
 catalogue validation (17), the Puja entry point (24), add-puja-to-cart (10),
 token revocation (17), ritual/kit authoring (32), vendor administration (27),
-reviews (25) and search (41).
+reviews (25), search (41), the wishlist (26), image upload (12), the per-area
+breakdown (13), vendor order scoping (4), admin list completeness (4), cancellation/purge
+stock and popularity (30) and seed completeness (13).
 Live suites cover the rest:
 
 | Suite | Assertions |
@@ -909,7 +1040,7 @@ Live suites cover the rest:
 | `verify_day2.py` | 68 |
 | `verify_day3.py` | 57 |
 | `verify_day3b.py` | 41 |
-| `verify_day3c.py` | 128 |
+| `verify_day3c.py` | 129 |
 | `verify_day4.py` | 88 |
 | `verify_day6.py` | 40 |
 | `verify_day7.py` | 30 |
@@ -917,9 +1048,53 @@ Live suites cover the rest:
 | `verify_day9.py` | 49 |
 | `verify_day11.py` | 68 |
 | `verify_day12.py` | 84 |
-| **Total live** | **727** |
-| `admin-dashboard/scripts/browser_check.mjs` | **64** (browser, not HTTP) |
-| `frontend/scripts/storefront_check.mjs` | **79** (browser, not HTTP) |
+| `verify_day13.py` | 68 |
+| `verify_day14.py` | 21 |
+| **Total live** | **817** |
+| `admin-dashboard/scripts/browser_check.mjs` | **112** (browser, not HTTP) |
+| `frontend/scripts/storefront_check.mjs` | **136** (browser, not HTTP) |
+| `frontend/scripts/scroll_probe.mjs` | 0 long frames of 354 (browser, perf not correctness) |
+
+> **Discrepancy to resolve:** `browser_check.mjs` is quoted as **112** here and **119** in the
+> command block in §5. One of the two is stale. Re-run it against a production build and
+> correct whichever is wrong — do not "fix" the number without measuring it.
+
+**Do not chain a sweep with `&&`.** Several of these scripts (and `curl`) exit non-zero
+while succeeding — `verify_day*.py` returns its failure count, and `curl -o /dev/null`
+can exit 23 on a write error after printing a healthy `200`. `cmd1 && cmd2` then silently
+skips `cmd2` and the sweep reports nothing, which reads as "no failures". Use `;`.
+
+**Start the API server with `--noreload` before a sweep.** Editing any `.py` under
+`backend/` makes the autoreloader restart its child; a child that dies mid-reload leaves
+the parent holding `:8000` and answering nothing at all (curl exits 56 with an empty
+body). That is indistinguishable from a broken endpoint, and it made four verifiers
+report "could not log in" in the same sweep.
+
+**Run a sweep in two batches, and restart the server between them.** In a sandboxed shell
+the HTTP layer saturates under a rapid burst: partway through a twelve-verifier run the
+process is still listening and still logging, but requests come back `000` or `503`
+intermittently and then not at all. It is an environment limit, not a Django or project
+fault — the process is healthy and a restart clears it. Two batches of five and seven
+complete reliably:
+
+```bash
+# batch 1
+for f in verify_day2 verify_day3 verify_day3b verify_day3c verify_day4; do
+  ./venv/Scripts/python.exe $f.py | tail -1
+done
+# restart the server, then batch 2
+for f in verify_day6 verify_day7 verify_day8 verify_day9 verify_day11 verify_day12 verify_day13; do
+  ./venv/Scripts/python.exe $f.py | tail -1
+done
+```
+
+**An interrupted sweep leaves scratch rows behind, and they break the next run.** A wedged
+server killed `verify_day3b` after it created its scratch area, and because that area was
+named `Kirtipur` — a real place name with no marker — the leftover was indistinguishable
+from legitimate data and made `verify_day3b` and `verify_day3c` fail on "only the three
+seeded areas remain". Both verifiers now name their scratch area `ZZ E2E …` and pre-clean
+that prefix. **Name scratch data so it announces itself**, and pre-clean it: a run can be
+interrupted at any point.
 
 **After any verification sweep, purge what it created** — `purge_verification_orders`,
 `purge_verification_users` and `purge_verification_reviews`, all with `--dry-run`. A
@@ -939,10 +1114,41 @@ account the script registers itself, and in the order that makes the badge known
 Ask of every assertion: *did I create the state I am about to claim?* If not, create it, or
 report a labelled SKIP — never assume it.
 
+**And a verifier must not mutate data it does not own.** The sharper edge of the same rule,
+learned on Day 13: `verify_day13.py` uploaded a test image onto `kits[0]` — the **seeded**
+*Bratabandha Ceremony Kit* — and never restored it, so simply running the verifier
+permanently changed the demo data. Nothing failed; the damage was only visible by reading
+`git status`, noticing an unexpected `media/kits/` directory, and asking the database which
+files it referenced. The check now creates its own scratch kit, deletes it, and asserts that
+no seeded kit points at a test upload.
+
+> **Reading `git status` and the `media/` directory is part of a verification sweep.** A
+> green run that quietly edited the fixtures is not a green run.
+
 **And read the data before choosing a probe for it.** A Day 12 check searched for
 "Retired Nonexistent Samagri" and expected nothing; "samagri" is a real word in several product
 names and descriptions, so it correctly matched one. The failure was in the probe, not the
 product.
+
+**Assert the invariant, not a number that happens to hold — and self-test any helper you
+parse with.** Two Day 13 checks passed for the wrong reason, and both were recorded as
+evidence until they did not:
+
+- `verify_day3c.py` asserted `count == 12` on a vendor's product list. That was the
+  pagination artifact: the list was paginated at 12 and the vendor happened to own exactly 12
+  products, so "12" was simultaneously the right answer and a first page indistinguishable
+  from one. Unpaginating the list made the check fail while the behaviour became *more*
+  correct. It now asserts ownership — every row belongs to that vendor, no unowned row leaks
+  in — which holds whatever the catalogue size becomes.
+- The dashboard check parsed `"Rs. 19,500"` with `replace(/[^\d.,-]/g, '')`, which keeps the
+  period in `Rs.` and turns the number into `.19500` → `0.195`. It agreed with the sum on its
+  first run only because every figure was then three digits, so the leading dot divided
+  everything by 1000 uniformly. The app was right both times. The parser now anchors on a
+  digit and **self-tests against nine known inputs** before it is trusted.
+
+> A check that passes for the wrong reason is worse than a missing check, because it gets
+> written down as proof. Before trusting a check, ask what would have to change for it to
+> fail — if the answer is "almost nothing", it is not yet evidence.
 
 > **Test the thing, not its shape.** When the recommender was rebuilt on Day 2, the
 > old tests passed against a broken implementation because they only asserted the
@@ -1026,8 +1232,16 @@ When you add a screen to either app, add its assertions to the matching script.
   `admin123`/`test1234`; move real config to environment variables when you touch settings.
 - `DEBUG = True`, `ALLOWED_HOSTS = ['*']`, `CORS_ALLOW_ALL_ORIGINS = True` are **dev-only and
   must not ship**. Narrow them before any real deployment.
-- **Remove the hardcoded credentials from `admin-dashboard/src/app/login/page.js`** — the form
-  currently pre-fills `admin`/`admin123` as defaults.
+- ~~Remove the hardcoded credentials from `admin-dashboard/src/app/login/page.js`~~ — **done,
+  verified 2026-09-23.** The form's fields are `useState('')`; this note was stale. Keep it
+  that way: a pre-filled password on a login form is a credential in source.
+- **`SECRET_KEY` is the JWT signing key, not just a Django setting.** Leaking it does not merely
+  expose a cookie secret — anyone holding it can *mint* a valid access token for any user,
+  including `admin`. Treat it as the highest-value secret in the repo. It is committed in this
+  repo's history, so **rotate it before this ever leaves a private repo.**
+- **`backend/db.sqlite3` is tracked**, and it holds real password hashes for `admin`,
+  `testuser` and `vendor1` whose passwords are documented in this file. Fine for a private
+  coursework repo; **untrack it (`git rm --cached`) if this repo is ever made public.**
 - Validate and bound every input server-side: quantity ≥ 1, price never trusted from the client,
   `shipping_city` restricted to the allowed set (already done). Never accept a client-supplied
   total.
@@ -1172,6 +1386,93 @@ reason the storefront renders verbatim (`docs/SEARCH.md`). The catalogue page al
 showing 12 of 35 products as though that were all of them. Along the way: `ToastContext` was
 handing out unstable callbacks — the same loop hazard as Day 11, fixed at the root.
 **379 unit tests + 727 live assertions + 143 browser assertions pass.**
+
+**Day 13 / 13.1 — the last P1 gaps, and inventory that was leaking (2026-09-22)** built the
+wishlist, an image-upload widget and the per-area breakdown, then audited the parts nobody had
+looked at. Two defects there were **invisible by construction** — both only manifest as
+accumulated drift. **Cancelling an order never returned its stock**, so inventory leaked
+permanently (**538 units across 23 products** before it was found, producing false restock
+alerts); and `seed_data` existed twice, with the one the docs told you to edit being dead code
+in a non-app package, so a fresh install seeded **0 rituals**. Every reservation now has a
+release path (`release_order_stock` / `reserve_order_stock`).
+
+**Day 14 — the five storefront routes nobody had ever loaded (2026-09-22)** closed the browser
+coverage gap on `/pujas/[slug]`, `/auth/register`, `/auth/forgot-password`,
+`/auth/reset-password` and `/account/orders/[id]`, and corrected two source comments that
+claimed `notFound()` returns an HTTP 404 on `/pujas/[slug]`. Measured: it returns **200**,
+because `src/app/pujas/loading.js` opens a Suspense boundary before the fetch resolves.
+The coverage is deliberately **by URL, not by click** — Next 16 makes `params` a Promise, so a
+route can render correctly on a client-side click and 404 on a direct load, and the build
+catches neither.
+
+**Day 14b — the mocked gateways now admit it (2026-09-22)** closed the last P2 honesty gap.
+`CheckoutView` marked an `esewa`/`khalti` order `paid` and `confirmed` with **no gateway
+involved at all**, and the dashboard, the confirmation screen and the status history all
+reported it as a real payment. One module-level constant (`PAYMENT_METHODS_ARE_MOCKED`) now
+drives the label everywhere; flip a value when a real integration lands and the labels vanish
+on their own. `cod` is deliberately **not** labelled.
+
+**Day 15 — a dashboard that lied to the one role nobody tested (2026-09-22)** found that
+`/analytics/sales/` and `/analytics/areas/` had returned `scope: 'all' | 'vendor'` since Day 9
+with **no client code reading it**. Both audiences got the same page with different numbers and
+no indication which, and the Total Revenue card was captioned with the hardcoded string
+`All time` — so a vendor was shown **Rs. 1,810** (their own 3 orders) under a label claiming it
+was their all-time *shop* revenue, against a shop-wide **Rs. 6,760**. The API was right the
+whole time. The dashboard home was also the one page the vendor browser section never visited:
+it made `/reviews` its last page and never loaded `/`.
+
+> **Two lessons worth more than the fix.**
+> 1. **A route name is not evidence about what a route returns.** Day 15 opened with the
+>    claim "there is no vendor analytics — `analytics/urls.py` has no vendor route", inferred
+>    from listing the URLs and never calling one. The routes are global by name and scoped by
+>    content. This is the same failure as a check that passes for the wrong reason: it was a
+>    conclusion drawn from a proxy instead of from the thing itself.
+> 2. **Ask which page has never been loaded by *which role*.** Three bugs in this project —
+>    the dead "create a category" button, the `/orders` table replaced by a false error, and
+>    this one — were found by coverage gaps, not by reading code. Section coverage is not role
+>    coverage.
+
+**Day 15b — two capabilities the product could not reach (2026-09-22)** asked Day 15's
+question of the account endpoints: *which endpoint does no client call?* `/auth/logout-all/`
+had existed since Day 7, with a docstring calling it "a real user-facing action", appearing in
+`verify_day7.py` and in `docs/API-SPEC.md` — and **zero references in any UI**. Meanwhile the
+only way to change a password was the forgot-password flow, which needs mailbox access and
+asks you to assert you have *lost* the password. `POST /api/auth/password-change/` and an
+Account Security panel on `/account` now cover both. The change **requires the current
+password** — the caller is already authenticated, so without it a stolen access token alone
+would lock the owner out permanently — and **revokes every token including the caller's own**,
+because a change that leaves old sessions alive protects nothing already stolen.
+
+> **The lesson, third time in one day.** Day 15: an API returning `scope` that nothing read.
+> Day 15b: two security endpoints nothing called. In each case the backend was correct, tested
+> and documented, and the *product* could not reach it. **Grep for every non-test reference
+> before calling an endpoint "done"** — a route that exists in `urls.py` and a route a user can
+> actually get to are different claims.
+
+**Day 15c — the last endpoint nobody called, and a check that failed for a reason it never
+named (2026-09-22)** finished that sweep. `/api/analytics/inventory/` was built, vendor-scoped,
+routed and documented with **no test and no caller**; it now has 9 tests and a Stock Health
+panel. Two things worth carrying forward from it:
+
+- **`stock__lt=10` includes `stock=0`, so the low-stock and out-of-stock lists are nested, not
+  disjoint.** Correct, but a screen rendering both would show the out-of-stock rows twice. A
+  test written against the seeded catalogue could never have caught this — its minimum stock is
+  **25** against a threshold of **10**, so every count is legitimately zero and the assertion
+  passes whatever the code does. **A fixture must own the edge it is testing.**
+- **A "regression" that was a skeleton race.** `the three seeded delivery areas are still
+  listed` failed on 2 of 3 consecutive runs while all three areas sat in the database. Cause:
+  deleting the scratch row sets `loading = true` and `AreasPanel` renders `.skeleton-line` divs
+  *instead of* the table, and the harness waited only for the scratch **name** to vanish — which
+  happens the moment the skeletons mount, before the refetch returns. Measured at that instant:
+  `skeletonCount: 3, tableRowCount: 0, seesKathmandu: false`. **A loading state and an empty
+  result are indistinguishable through `innerText`** — wait on the element the assertion is
+  about, and assert the row count so the two stay separable. One of the three runs also printed
+  no summary at all, because an unguarded `waitForSelector` throws out of `main()`.
+
+> **Corollary, and the sharpest one yet: do not keep an explanation that fits.** I had seen this
+> same failure earlier and attributed it to two harnesses running concurrently. It reproduces
+> with one process. **A convenient explanation for a passing-then-failing check is a hypothesis,
+> not a finding** — measure the DOM at the failure instant before you believe it.
 
 **The shopping flow already works.** Do not rebuild it. Fix, extend, and polish.
 

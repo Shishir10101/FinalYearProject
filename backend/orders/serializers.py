@@ -1,5 +1,7 @@
 from rest_framework import serializers
-from .models import Cart, Order, OrderItem, ORDER_STATUS_CHOICES
+from .models import (
+    Cart, Order, OrderItem, ORDER_STATUS_CHOICES, PAYMENT_METHODS_ARE_MOCKED,
+)
 from products.models import Area
 from products.serializers import ProductListSerializer
 
@@ -36,14 +38,23 @@ class OrderSerializer(serializers.ModelSerializer):
     payment_method_display = serializers.CharField(source='get_payment_method_display', read_only=True)
     subtotal = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
     timeline = serializers.SerializerMethodField()
+    # Whether the gateway named by `payment_method` actually took any money.
+    # Published so the confirmation screen can say "demo mode" instead of letting a
+    # `paid` status imply a real transaction. Derived from the single constant in
+    # `models.py`, never re-listed here — see PAYMENT_METHODS_ARE_MOCKED.
+    payment_is_mocked = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = ['id', 'total_amount', 'subtotal', 'delivery_fee', 'status', 'status_display',
                   'payment_method', 'payment_method_display', 'payment_status',
+                  'payment_is_mocked',
                   'shipping_address', 'shipping_city', 'phone', 'notes',
                   'items', 'timeline', 'created_at']
-        read_only_fields = ['total_amount', 'status', 'payment_status']
+        read_only_fields = ['total_amount', 'status', 'payment_status', 'payment_is_mocked']
+
+    def get_payment_is_mocked(self, obj):
+        return bool(PAYMENT_METHODS_ARE_MOCKED.get(obj.payment_method, False))
 
     def get_timeline(self, obj):
         """Progress steps for the customer-facing order tracker.

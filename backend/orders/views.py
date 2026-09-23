@@ -1,9 +1,13 @@
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.conf import settings
 from django.db import transaction
-from .models import Cart, Order, OrderItem, OrderStatusEvent
+from .models import (
+    Cart, Order, OrderItem, OrderStatusEvent,
+    PAYMENT_METHOD_CHOICES, PAYMENT_METHODS_ARE_MOCKED,
+)
 from products.models import Area, Product
 from core.permissions import IsStaffRole, is_manager, vendor_for
 from .serializers import (
@@ -19,6 +23,93 @@ def get_delivery_fee():
     return DELIVERY_FEE
 
 
+def release_order_stock(order):
+    """Return a cancelled order's units to inventory. Returns the units restored.
+
+    Stock is **reserved** when an order is placed — `CheckoutView` decrements
+    `product.stock` for every line — and nothing ever released it. Cancelling an order
+    therefore leaked inventory permanently: the goods are back on the shelf, but the
+    system still counts them as gone. Measured on this project's own data, that had
+    already cost **538 units across 23 products**, which in turn produced false
+    low-stock and restock alerts — the demand-prediction feature reporting on inventory
+    that does not exist.
+
+    `OrderItem.product` is nullable (`SET_NULL`), so a line whose product has since been
+    deleted is skipped: there is no row left to return stock to. That is the correct
+    behaviour rather than a 500 — the order stays cancellable.
+
+    **`popularity_score` is deliberately not adjusted.** It records that a product was
+    asked for, not that money changed hands, so it stays monotonic; `stock` is a factual
+    count of what is on the shelf and must be exact. The two are not symmetric.
+    """
+    restored = 0
+    for item in order.items.select_related('product'):
+        product = item.product
+        if product is None:
+            continue
+        product.stock += item.quantity
+        product.save(update_fields=['stock'])
+        restored += item.quantity
+    return restored
+
+
+def reserve_order_stock(order):
+    """Re-take a reinstated order's units. Returns a list of shortfalls.
+
+    The inverse of `release_order_stock`, for when a cancelled order is moved back into
+    an active status. If any line can no longer be covered, the caller must abort — a
+    partial reservation would silently under-count stock, which is the same class of bug
+    in the other direction. The caller wraps this in `transaction.atomic`, so raising
+    rolls back the lines already taken.
+    """
+    shortfalls = []
+    for item in order.items.select_related('product'):
+        product = item.product
+        if product is None:
+            continue
+        if product.stock < item.quantity:
+            shortfalls.append({
+                'product': product.name,
+                'available': product.stock,
+                'needed': item.quantity,
+            })
+            continue
+        product.stock -= item.quantity
+        product.save(update_fields=['stock'])
+    return shortfalls
+
+
+def reverse_order_popularity(order):
+    """Undo the demand signal a **fixture** order contributed. Returns points removed.
+
+    `popularity_score` is only ever incremented, by `CheckoutView`. Cancellation
+    deliberately does *not* reverse it, because a cancelled order still represents a
+    customer asking for something.
+
+    A **verification** order represents nobody. That distinction is the whole point of
+    this function: the field feeds the recommendation engine's popularity bonus
+    (`festivals/recommender.py`), the trending list, the default catalogue ordering and
+    the search tie-break — so fixture traffic left in place means the demo recommends
+    whatever the test suite happened to buy. Left unchecked it had reached **591 points
+    across 23 products**, with one product at 256 against a seeded 98.
+
+    Floored at zero: `popularity_score` is a `PositiveIntegerField`, so an unguarded
+    subtraction would raise `IntegrityError` on a product whose score was already reset
+    below the quantity being reversed.
+    """
+    removed = 0
+    for item in order.items.select_related('product'):
+        product = item.product
+        if product is None:
+            continue
+        taken = min(item.quantity, product.popularity_score)
+        if taken:
+            product.popularity_score -= taken
+            product.save(update_fields=['popularity_score'])
+            removed += taken
+    return removed
+
+
 class StoreConfigView(APIView):
     """Public storefront configuration shared by both frontends.
 
@@ -28,7 +119,14 @@ class StoreConfigView(APIView):
     Delivery areas are included with their fee overrides so the checkout page can
     show the correct total for the area as soon as it is chosen, rather than
     discovering a different amount after the order is placed.
+
+    Payment methods are served from here for the same reason, and because the
+    checkout form has to tell the customer the truth about them *before* they
+    choose one. Every digital method is currently mocked — see
+    ``PAYMENT_METHODS_ARE_MOCKED`` — and a demo that quietly reports a paid order
+    with no gateway behind it is the one thing this project must not do.
     """
+
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
@@ -49,6 +147,17 @@ class StoreConfigView(APIView):
             'free_delivery_threshold': None,  # reserved; no free-delivery rule yet
             'currency': 'NPR',
             'areas': areas,
+            'payment_methods': [
+                {
+                    'value': value,
+                    'label': label,
+                    'is_mocked': bool(PAYMENT_METHODS_ARE_MOCKED.get(value, False)),
+                }
+                for value, label in PAYMENT_METHOD_CHOICES
+            ],
+            # A single flag the UI can use for one banner, rather than asking it to
+            # re-derive "some methods are fake" from the list each time.
+            'any_payment_mocked': any(PAYMENT_METHODS_ARE_MOCKED.values()),
         })
 
 
@@ -281,14 +390,27 @@ class CheckoutView(APIView):
             note='Order placed by the customer.',
         )
 
-        # Mock payment
+        # Payment. Every digital method is currently mocked: this marks the order paid
+        # and confirmed with no gateway involved. That is a deliberate demo shortcut
+        # (see PAYMENT_METHODS_ARE_MOCKED), and the order records it as such in its own
+        # history, so the tracker cannot later be read as evidence that money moved.
+        #
+        # The status is still advanced to `confirmed` rather than left at `pending`,
+        # because that is what makes the rest of the demo flow coherent — the point is
+        # to be honest about the payment, not to make the order unusable.
         if order.payment_method in ['esewa', 'khalti']:
+            is_mocked = PAYMENT_METHODS_ARE_MOCKED.get(order.payment_method, False)
             order.payment_status = 'paid'
             order.status = 'confirmed'
             order.save()
             OrderStatusEvent.record(
                 order, 'confirmed', from_status='pending', changed_by=request.user,
-                note='Payment received (mocked gateway).',
+                note=(
+                    f'{order.get_payment_method_display()} payment simulated — '
+                    'no gateway was contacted and no money was taken.'
+                    if is_mocked else
+                    f'{order.get_payment_method_display()} payment received.'
+                ),
             )
 
         return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
@@ -346,22 +468,62 @@ class AdminOrderUpdateView(generics.UpdateAPIView):
             return qs.none()
         return qs.filter(items__product__vendor=vendor).distinct()
 
+    @transaction.atomic
     def perform_update(self, serializer):
-        """Persist the change and append a status-history row when status moves.
+        """Persist the change, move stock, and append a status-history row.
 
         The event is written only for a genuine transition. Saving the same status
         back (or changing only ``payment_status``) must not litter the history with
         duplicate entries, otherwise the customer's timeline fills up with
         meaningless repeated steps.
+
+        **Stock moves with the status.** Cancelling returns the order's units to
+        inventory; moving a cancelled order back into an active status re-takes them.
+        Both are guarded on `previous_status` so a repeated save cannot restore the same
+        units twice — the idempotency matters more than the happy path here, because a
+        double restore inflates inventory just as silently as the original leak
+        deflated it.
+
+        The whole method is atomic, so a rejected re-reservation rolls back the lines it
+        had already taken rather than leaving stock half-decremented.
         """
         order = self.get_object()
         previous_status = order.status
         updated = serializer.save()
-        if updated.status != previous_status:
-            OrderStatusEvent.record(
-                updated,
-                updated.status,
-                from_status=previous_status,
-                changed_by=self.request.user,
-                note='Status updated by staff.',
+
+        if updated.status == previous_status:
+            return
+
+        note = 'Status updated by staff.'
+
+        if updated.status == 'cancelled':
+            restored = release_order_stock(updated)
+            note = (
+                f'Order cancelled. {restored} unit(s) returned to stock.'
+                if restored else 'Order cancelled.'
             )
+        elif previous_status == 'cancelled':
+            shortfalls = reserve_order_stock(updated)
+            if shortfalls:
+                # Raised inside the atomic block, so the partial decrements roll back.
+                # Refusing is the right answer: reinstating an order the shop can no
+                # longer fulfil would put a promise on the customer's timeline that
+                # cannot be kept.
+                detail = '; '.join(
+                    f"{s['product']} needs {s['needed']} but only {s['available']} remain"
+                    for s in shortfalls
+                )
+                raise ValidationError({
+                    'status': (
+                        f'Cannot reinstate this order — stock is no longer available. {detail}'
+                    ),
+                })
+            note = 'Order reinstated. Stock re-reserved.'
+
+        OrderStatusEvent.record(
+            updated,
+            updated.status,
+            from_status=previous_status,
+            changed_by=self.request.user,
+            note=note,
+        )

@@ -13,7 +13,7 @@ from festivals.models import FestivalKit, KitItem, UpcomingFestival
 
 # Analyze database structure and content
 def analyze_database():
-    print("=== Puja Samagri E-Commerce Platform Database Analysis ===\n")
+    print("=== Puja Sewa E-Commerce Platform Database Analysis ===\n")
     
     # Get all models and their fields
     models_analysis = []

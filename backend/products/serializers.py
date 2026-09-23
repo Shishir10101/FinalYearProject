@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Area, Category, Product, Review, Vendor
+from .models import Area, Category, Product, Review, Vendor, WishlistItem
 
 
 class AreaSerializer(serializers.ModelSerializer):
@@ -67,13 +67,28 @@ class ProductDetailSerializer(serializers.ModelSerializer):
     # here would issue two queries per product on any list that uses this serializer.
     average_rating = serializers.FloatField(read_only=True, allow_null=True)
     review_count = serializers.IntegerField(read_only=True)
+    is_wishlisted = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = ['id', 'name', 'slug', 'description', 'price', 'stock',
                   'image', 'category', 'vendor', 'is_featured', 'in_stock',
                   'popularity_score', 'unit', 'created_at',
-                  'average_rating', 'review_count']
+                  'average_rating', 'review_count', 'is_wishlisted']
+
+    def get_is_wishlisted(self, obj):
+        """Whether the signed-in reader has saved this product.
+
+        Answered here rather than by a second request from the browser, so the heart
+        on the detail page is right on first paint instead of flipping once a
+        round-trip resolves. One object per request, so this is a single extra query
+        — not the per-row N+1 the review summary above deliberately avoids.
+        """
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if not (user and user.is_authenticated):
+            return False
+        return WishlistItem.objects.filter(user=user, product=obj).exists()
 
 
 # --- Reviews ---------------------------------------------------------------
@@ -205,3 +220,40 @@ class CategoryAdminSerializer(serializers.ModelSerializer):
         if clash.exists():
             raise serializers.ValidationError('A category with this name already exists.')
         return name
+
+
+# --- Wishlist --------------------------------------------------------------
+
+
+class WishlistItemSerializer(serializers.ModelSerializer):
+    """A saved product, rendered as a card.
+
+    The product is nested rather than returned as an id, because every screen that
+    reads a wishlist renders the product itself — and the storefront's `ProductCard`
+    takes exactly the shape `ProductListSerializer` produces. Nesting it here means
+    the wishlist page and the catalogue page cannot drift apart: there is one
+    definition of what a product card needs, and this reuses it.
+    """
+
+    product = ProductListSerializer(read_only=True)
+
+    class Meta:
+        model = WishlistItem
+        fields = ['id', 'product', 'created_at']
+
+
+class WishlistWriteSerializer(serializers.Serializer):
+    """Add a product to your own wishlist.
+
+    Only `product_id` is writable. `user` comes from the session and must never be
+    accepted from the client — otherwise anyone could write into somebody else's
+    list. The product is resolved from an active-product queryset, so a wishlist
+    cannot be pointed at a delisted product.
+    """
+
+    product_id = serializers.IntegerField(min_value=1)
+
+    def validate_product_id(self, value):
+        if not Product.objects.filter(pk=value, is_active=True).exists():
+            raise serializers.ValidationError('That product is not available.')
+        return value

@@ -14,8 +14,11 @@ explanation, which the broken code could not satisfy.
 from datetime import timedelta
 from decimal import Decimal
 
+import shutil
+import tempfile
+
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -993,7 +996,30 @@ class AdminKitSerializerTests(TestCase):
     `FestivalKitAdminSerializer` used to be ``fields = '__all__'``. That leaked
     `image` — a file upload a JSON form cannot set — and did not reliably carry a
     declared `item_count`, which the kits table shows. Both are pinned here.
+
+    **`image` is now included on purpose.** It was excluded because "a JSON form
+    cannot set a file field", which was true then and meant the seeded kit artwork
+    was the only artwork a kit could ever have. The dashboard now uploads multipart
+    (`ImageField` + `api.upload()`), so the original reason no longer holds. The
+    assertion below was inverted deliberately, not quietly deleted — the old
+    guarantee is gone and the test says so.
+
+    Media is redirected to a temp directory, so a run does not write real PNGs into the
+    committed `backend/media/kits/`. See the note on `ProductImageUploadTests`.
     """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._media_root = tempfile.mkdtemp(prefix='test-kit-media-')
+        cls._media_override = override_settings(MEDIA_ROOT=cls._media_root)
+        cls._media_override.enable()
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        cls._media_override.disable()
+        shutil.rmtree(cls._media_root, ignore_errors=True)
 
     def setUp(self):
         self.category = Category.objects.create(name='Kit Serializer Cat')
@@ -1019,10 +1045,50 @@ class AdminKitSerializerTests(TestCase):
         row = self.api().get('/api/festivals/admin/kits/').json()[0]
         self.assertEqual(row['item_count'], 1)
 
-    def test_image_is_not_exposed(self):
-        """A JSON form cannot set a file field, so it must not be offered."""
+    def test_image_is_exposed_and_writable(self):
+        """Reversed on purpose — see the class docstring."""
         row = self.api().get('/api/festivals/admin/kits/').json()[0]
-        self.assertNotIn('image', row)
+        self.assertIn('image', row)
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        import base64
+        png = SimpleUploadedFile(
+            'kit.png',
+            base64.b64decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+            ),
+            content_type='image/png',
+        )
+        response = self.api().patch(
+            f'/api/festivals/admin/kits/{self.kit.id}/',
+            {'image': png}, format='multipart',
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.kit.refresh_from_db()
+        self.assertTrue(self.kit.image)
+        self.assertTrue(self.kit.image.name.startswith('kits/'))
+
+    def test_an_uploaded_kit_image_keeps_the_rest_of_the_form(self):
+        """The dashboard sends every field alongside the file, in one request."""
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        import base64
+        png = SimpleUploadedFile(
+            'kit2.png',
+            base64.b64decode(
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+            ),
+            content_type='image/png',
+        )
+        response = self.api().patch(
+            f'/api/festivals/admin/kits/{self.kit.id}/',
+            {'image': png, 'name': 'Renamed Kit', 'discount_percent': 15},
+            format='multipart',
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        self.kit.refresh_from_db()
+        self.assertEqual(self.kit.name, 'Renamed Kit')
+        self.assertEqual(self.kit.discount_percent, 15)
+        self.assertTrue(self.kit.image)
 
     def test_create_accepts_the_form_payload(self):
         response = self.api().post('/api/festivals/admin/kits/', {
@@ -1093,3 +1159,228 @@ class AdminPujaKitReportingTests(TestCase):
         self.assertEqual(response.status_code, 200)
         row = self.api().get('/api/festivals/admin/pujas/').json()[0]
         self.assertEqual(row['kit_names'], [])
+
+
+class SeedDataCompletenessTests(TestCase):
+    """`manage.py seed_data` must produce a complete catalogue **on its own**.
+
+    This guards a bug that only existed on a fresh database, which is exactly where it
+    would never be noticed by anyone working on an already-seeded checkout.
+
+    `seed_data` existed as two files: `core/management/commands/seed_data.py` and
+    `products/management/commands/seed_data.py`. `core/` is the Django *project* package
+    (settings, urls and wsgi live there) and is **not** in `INSTALLED_APPS`, so its copy
+    was dead code that was never discovered — while the docs instructed contributors to
+    edit exactly that one. The live copy had drifted: it never called `seed_pujas`.
+
+    The consequence was measurable, and measured: a fresh install came up with
+    **0 rituals**. The Puja path is one of the six discovery entry points `AGENTS.md`
+    requires, so the requirement was only satisfied on a database where somebody had
+    happened to run `seed_pujas` by hand.
+
+    The dead copy is deleted and the live one is complete. This test runs the real
+    command and asserts what a fresh install must have.
+    """
+
+    def test_seed_data_alone_produces_rituals(self):
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+
+        self.assertTrue(Puja.objects.exists(),
+                        'a fresh seed produced no rituals — the Puja entry point is empty')
+        self.assertGreaterEqual(Puja.objects.count(), 6,
+                                'fewer rituals than the brief describes')
+
+    def test_seed_data_alone_produces_the_other_entry_points(self):
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+
+        # The six discovery paths from AGENTS.md §1: Product, Category, Festival,
+        # Samagri, Ready-made Kit — and Puja, asserted above.
+        self.assertTrue(Product.objects.exists(), 'no products')
+        self.assertTrue(Category.objects.exists(), 'no categories')
+        self.assertTrue(FestivalKit.objects.exists(), 'no kits')
+        self.assertTrue(UpcomingFestival.objects.exists(), 'no festivals on the calendar')
+
+    def test_seeded_rituals_have_samagri(self):
+        """A ritual with no items is a page that says nothing."""
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+
+        empty = [p.name for p in Puja.objects.all() if p.items.count() == 0]
+        # One ritual (Daily Puja) is deliberately kit-less, but it still carries items.
+        self.assertFalse(empty, f'rituals seeded with no samagri: {empty}')
+
+    def test_seed_data_is_idempotent(self):
+        """Re-running must not duplicate anything — `get_or_create` throughout."""
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        before = (
+            Product.objects.count(), Category.objects.count(),
+            FestivalKit.objects.count(), Puja.objects.count(),
+        )
+        call_command('seed_data', stdout=StringIO())
+        after = (
+            Product.objects.count(), Category.objects.count(),
+            FestivalKit.objects.count(), Puja.objects.count(),
+        )
+        self.assertEqual(after, before)
+
+    def test_reset_stock_restores_the_seeded_values(self):
+        """`--reset-stock` is the repair path for inventory consumed by lost orders."""
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        product = Product.objects.filter(name='Dashain Tika Set').first()
+        self.assertIsNotNone(product, 'the seed data changed shape')
+        intended = product.stock
+
+        product.stock = 1
+        product.save(update_fields=['stock'])
+
+        call_command('seed_data', '--reset-stock', stdout=StringIO())
+        product.refresh_from_db()
+        self.assertEqual(product.stock, intended)
+
+    def test_without_reset_stock_an_existing_product_is_left_alone(self):
+        """The flag is opt-in: a plain re-seed must not silently overwrite live stock."""
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        product = Product.objects.filter(name='Dashain Tika Set').first()
+        product.stock = 7
+        product.save(update_fields=['stock'])
+
+        call_command('seed_data', stdout=StringIO())
+        product.refresh_from_db()
+        self.assertEqual(product.stock, 7)
+
+    def test_reset_popularity_undoes_fixture_demand(self):
+        """`popularity_score` is moved only by checkout, and it steers recommendations.
+
+        So verification traffic left in place makes the demo recommend whatever the test
+        suite bought. Measured at 591 points across 23 products before it was noticed.
+        """
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        product = Product.objects.filter(name='Dashain Tika Set').first()
+        intended = product.popularity_score
+
+        product.popularity_score = intended + 40
+        product.save(update_fields=['popularity_score'])
+
+        # A plain re-seed leaves it alone — the flag is opt-in.
+        call_command('seed_data', stdout=StringIO())
+        product.refresh_from_db()
+        self.assertEqual(product.popularity_score, intended + 40)
+
+        call_command('seed_data', '--reset-popularity', stdout=StringIO())
+        product.refresh_from_db()
+        self.assertEqual(product.popularity_score, intended)
+
+    def test_a_removed_kit_item_is_re_added_by_reset_kit_items(self):
+        """Kit items are written only when a kit is *created*.
+
+        So a line deleted from a seeded kit is unrecoverable by re-seeding — which is how
+        "Dashain Tika Set" disappeared from the Dashain kit's own item list, taking the
+        kit's headline item, one required count and part of its `total_price` with it.
+        """
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        kit = FestivalKit.objects.get(name='Dashain Puja Complete Kit')
+        tika = Product.objects.get(name='Dashain Tika Set')
+        before = kit.items.count()
+        self.assertTrue(before >= 9, f'the seed changed shape: {before} items')
+
+        KitItem.objects.filter(kit=kit, product=tika).delete()
+        self.assertEqual(kit.items.count(), before - 1)
+
+        # A plain re-seed cannot bring it back...
+        call_command('seed_data', stdout=StringIO())
+        self.assertEqual(kit.items.count(), before - 1)
+
+        # ...but the flag can.
+        call_command('seed_data', '--reset-kit-items', stdout=StringIO())
+        self.assertEqual(kit.items.count(), before)
+        restored = KitItem.objects.get(kit=kit, product=tika)
+        self.assertTrue(restored.is_required, 'the required flag was not restored')
+
+    def test_reset_kit_items_corrects_a_drifted_quantity(self):
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        kit = FestivalKit.objects.get(name='Dashain Puja Complete Kit')
+        tika = Product.objects.get(name='Dashain Tika Set')
+        item = KitItem.objects.get(kit=kit, product=tika)
+        item.quantity = 99
+        item.is_required = False
+        item.save(update_fields=['quantity', 'is_required'])
+
+        call_command('seed_data', '--reset-kit-items', stdout=StringIO())
+        item.refresh_from_db()
+        self.assertEqual(item.quantity, 1)
+        self.assertTrue(item.is_required)
+
+    def test_reset_kit_items_does_not_delete_an_admins_own_addition(self):
+        """A repair tool must not destroy real work."""
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        kit = FestivalKit.objects.get(name='Dashain Puja Complete Kit')
+        extra = Product.objects.get(name='Rudraksha Mala')
+        KitItem.objects.get_or_create(
+            kit=kit, product=extra, defaults={'quantity': 1, 'is_required': False},
+        )
+        count_with_extra = kit.items.count()
+
+        call_command('seed_data', '--reset-kit-items', stdout=StringIO())
+        self.assertEqual(kit.items.count(), count_with_extra,
+                         'a hand-added item was deleted by the repair')
+
+    def test_reset_kit_items_is_idempotent(self):
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        call_command('seed_data', '--reset-kit-items', stdout=StringIO())
+        first = FestivalKit.objects.get(name='Dashain Puja Complete Kit').items.count()
+
+        out = StringIO()
+        call_command('seed_data', '--reset-kit-items', stdout=out)
+        second = FestivalKit.objects.get(name='Dashain Puja Complete Kit').items.count()
+
+        self.assertEqual(first, second)
+        self.assertIn('re-added 0 missing, corrected 0 drifted', out.getvalue())
+
+    def test_a_fresh_seed_produces_the_same_ritual_items_as_a_repair(self):
+        """The repair must converge on the same state a fresh seed produces."""
+        from io import StringIO
+
+        call_command('seed_data', stdout=StringIO())
+        baseline = sorted(
+            (p.slug, p.items.count(), p.items.filter(is_required=True).count())
+            for p in Puja.objects.all()
+        )
+
+        # Break a kit, then repair.
+        kit = FestivalKit.objects.get(name='Dashain Puja Complete Kit')
+        KitItem.objects.filter(kit=kit).first().delete()
+        call_command('seed_data', '--reset-kit-items', stdout=StringIO())
+
+        after = sorted(
+            (p.slug, p.items.count(), p.items.filter(is_required=True).count())
+            for p in Puja.objects.all()
+        )
+        self.assertEqual(after, baseline)
+
+    def test_there_is_only_one_seed_data_command(self):
+        """Two copies is what caused the divergence. Guard the structural cause too."""
+        from django.core.management import get_commands
+
+        self.assertEqual(get_commands().get('seed_data'), 'products',
+                         'seed_data moved; the duplicate-command trap may be back')

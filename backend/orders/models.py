@@ -19,6 +19,28 @@ PAYMENT_METHOD_CHOICES = [
     ('khalti', 'Khalti'),
 ]
 
+# Which payment methods actually collect money. **None of the digital ones do.**
+#
+# `CheckoutView` handles an `esewa`/`khalti` order by marking it paid and confirmed
+# with no gateway involved — no redirect, no signature check, no callback. That is a
+# deliberate demo shortcut, but until now nothing said so *anywhere the customer could
+# see*: the checkout screen offered eSewa and Khalti as ordinary choices, and the
+# confirmation then reported a paid order.
+#
+# This project already treats "do not present something as more real than it is" as a
+# rule — the forecast page carries a synthetic-data banner for exactly this reason, and
+# `SyntheticSalesRecord` is a separate table so fabricated rows can never mix with real
+# ones. A mocked gateway deserves the same honesty. Declaring it here, once, is what
+# lets the API and both frontends agree instead of each guessing.
+#
+# Flip a value to `True` on the day a real integration lands; everything downstream
+# follows from this constant alone.
+PAYMENT_METHODS_ARE_MOCKED = {
+    'cod': False,     # not mocked — cash is collected on delivery, as advertised
+    'esewa': True,
+    'khalti': True,
+}
+
 PAYMENT_STATUS_CHOICES = [
     ('pending', 'Pending'),
     ('paid', 'Paid'),

@@ -383,15 +383,25 @@ class Recommender:
         return ordered[:limit]
 
 
-def serialize_recommendations(entries, serializer_class):
+def serialize_recommendations(entries, serializer_class, context=None):
     """Attach explanation metadata to serialized product dicts.
 
     Kept separate from :class:`Recommender` so the ranking logic has no
     dependency on DRF serializers.
+
+    ``context`` must carry the ``request``. Without it a DRF ``ImageField``
+    cannot build an absolute URI and silently falls back to a **relative**
+    one (``/media/products/x.png``). Every other endpoint gets the context
+    automatically from its generic view; this helper is called by hand, so
+    it has to be passed in. Omitting it made the recommendations endpoint the
+    only one returning relative image URLs — which the storefront then
+    resolved against its own origin on :3000 and 404'd, so the whole
+    "Recommended For You" row rendered as broken images.
     """
+    context = context or {}
     out = []
     for entry in entries:
-        data = serializer_class(entry.product).data
+        data = serializer_class(entry.product, context=context).data
         data['recommendation'] = {
             'score': entry.score,
             'urgency': entry.urgency,

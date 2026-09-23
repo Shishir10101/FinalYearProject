@@ -11,7 +11,7 @@ import logging
 from .serializers import (
     RegisterSerializer, UserSerializer, ProfileUpdateSerializer,
     PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
-    AdminUserSerializer,
+    PasswordChangeSerializer, AdminUserSerializer,
 )
 from .password_reset import build_reset_url
 from .throttling import PasswordResetThrottle
@@ -172,13 +172,13 @@ class PasswordResetRequestView(APIView):
         return Response(payload)
 
     def _send(self, user, reset_url):
-        subject = 'Reset your Puja Samagri Store password'
+        subject = 'Reset your Puja Sewa password'
         # Read from the setting rather than hardcoding, so the email cannot claim
         # a different lifetime than the token actually has.
         hours = settings.PASSWORD_RESET_TIMEOUT // 3600
         message = (
             f'Namaste {user.get_short_name() or user.username},\n\n'
-            f'Someone asked to reset the password for your Puja Samagri Store account.\n'
+            f'Someone asked to reset the password for your Puja Sewa account.\n'
             f'Open the link below to choose a new one:\n\n'
             f'{reset_url}\n\n'
             f'The link expires in {hours} hours and stops working once it has been used.\n'
@@ -237,4 +237,45 @@ class LogoutAllView(APIView):
         return Response({
             'message': 'All other sessions have been signed out.',
             'token_version': version,
+        })
+
+
+class PasswordChangeView(APIView):
+    """Change the password of the signed-in user.
+
+    The gap this fills: the *only* way to change a password was the forgot-password
+    flow, which requires mailbox access and assumes you have lost the password. A
+    logged-in customer wanting a different password had no route at all.
+
+    **This revokes every existing token, including the caller's own.** That is the
+    same reasoning `PasswordResetConfirmView` follows — the usual reason to change a
+    password is that someone else may know it — and it is the honest answer rather
+    than a convenience: leaving the old tokens alive would mean the change protected
+    nothing that had already been stolen.
+
+    Because the caller's own access token dies with the rest, the response says so
+    explicitly and the client is expected to send the user back to the login screen
+    rather than continue with a token that is now dead. The alternative — minting a
+    fresh token for the current device — was rejected as it would require the view to
+    reach into SimpleJWT's token internals purely to save one login.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    # Same throttle family as the reset endpoints: this is a password-guessing
+    # surface, since `current_password` is checked against a real account.
+    throttle_classes = [PasswordResetThrottle]
+
+    def post(self, request):
+        serializer = PasswordChangeSerializer(
+            data=request.data, context={'request': request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        revoke_tokens(request.user)
+        return Response({
+            'message': (
+                'Your password has been changed and every other session has been '
+                'signed out. Please log in again with your new password.'
+            ),
+            'reauthentication_required': True,
         })

@@ -87,6 +87,8 @@ HOME → CATEGORY/FESTIVAL → PRODUCT LIST → DETAILS → ADD TO CART
 | **Order status timeline** | ✅ | 5-step tracker + a distinct cancelled state |
 | **Real status timestamps** | ✅ | Each step shows *when* it happened, from `OrderStatusEvent` |
 | **Cancellation time** | ✅ | The cancelled state carries its own timestamp |
+| **Cancelling returns stock** | ✅ | **Fixed Day 13.1** — cancelling used to leak the order's units permanently |
+| **Reinstating re-reserves** | ✅ | Refused with an explanation if the stock is gone, rather than promising what cannot ship |
 
 ### 2.3 Account
 
@@ -97,11 +99,12 @@ HOME → CATEGORY/FESTIVAL → PRODUCT LIST → DETAILS → ADD TO CART
 | Profile view + edit | ✅ |
 | Area dropdown from the DB | ✅ |
 | **Password reset** | ✅ Real token flow — works once, expires in 24 h, no account enumeration |
-| **Sign out everywhere** | ✅ `POST /auth/logout-all/` revokes every token for the account |
+| **Password change (signed in)** | ✅ **Built on Day 15** — `/account` → Account Security. Requires the current password, revokes every token on success |
+| **Sign out everywhere** | ✅ `POST /auth/logout-all/` revokes every token for the account — **reachable from `/account` since Day 15**; the endpoint existed from Day 7 with no UI |
 | **Token revocation** | ✅ A reset ends existing sessions, including unexpired access tokens |
 | **Full order history** | ✅ `/account/orders` — every order, paginated by walking `?page=` |
 | **Reviews and ratings** | ✅ **Built on Day 11** — write, edit and delete your own from the product page |
-| Wishlist | ❌ Not built (P1) |
+| **Wishlist** | ✅ **Built on Day 13** — heart on every product card, `/wishlist` page, navbar count. Survives a reload; one row per (customer, product) |
 
 > `/account` shows the five most recent orders under "Recent Orders". The **My Orders**
 > item in the account dropdown used to link to `/account/orders`, which did not exist —
@@ -166,6 +169,27 @@ although both are seeded rituals with complete kits; and `diyo` ranked *Cotton W
 > `?search=` on the list endpoints is **unchanged** — the dashboard's item picker depends on
 > it and wants a plain substring match over one vendor's stock, which is a different job.
 
+### 2.7 Wishlist — *built Day 13*
+
+| Feature | Status | Notes |
+|---|---|---|
+| Save / unsave | ✅ | A heart on every product card and on the product page |
+| Persists | ✅ | Stored on the account, so it survives a reload and a new visit |
+| `/wishlist` page | ✅ | Every saved product as a card, newest first, with an explicit Remove |
+| Navbar count | ✅ | A badge beside the cart, so saving is visibly acknowledged from anywhere |
+| Private | ✅ | Only your own list; another customer's save never flips your heart |
+| Correct on first paint | ✅ | `wishlistLoaded` gates the heart, so it never shows "unsaved" then flips |
+| Idempotent | ✅ | A double-clicked heart returns `200`, not a duplicate row or a `400` |
+
+**Why it matters here.** This is a festival shop: a shopper assembles a list over several
+visits as Dashain or Tihar approaches. Losing that list is losing the sale. It is the last of
+the three tables `DATABASE-DESIGN.md` had listed as "not in scope" — `Review` (Day 11),
+`WishlistItem` (Day 13), `Coupon` still open.
+
+> The heart sits inside the product card's `<Link>`, so it calls `preventDefault` and
+> `stopPropagation`. Without that, saving a product would also navigate to it — a bug no API
+> test can see, and the browser check now asserts the URL does not move.
+
 ---
 
 ## 3. Admin dashboard (`admin-dashboard`, :3001)
@@ -183,10 +207,10 @@ although both are seeded rituals with complete kits; and `diyo` ranked *Cotton W
 
 | Screen | Status | Capabilities |
 |---|---|---|
-| Dashboard | ✅ | KPIs, priority alerts, revenue chart |
-| Products | ✅ | **Create · Edit · Delete · Enable/Disable**, search, stock badges |
-| Orders | ✅ | List, filter, change status; vendor-scoped |
-| Festival Kits | ✅ | **Create · Edit · Delete · Enable/Disable**, search, and an **inline item editor** — add a product, set its quantity and its required/optional flag, remove it |
+| Dashboard | ✅ | KPIs, priority alerts, revenue chart, an **Orders by Delivery Area** breakdown *(added Day 13)* whose rows sum to the Total Revenue card, a **Stock Health** panel *(added Day 15c)*, and an explicit **scope banner** *(added Day 15)* that names whether the figures are shop-wide or limited to the viewer's own products |
+| Products | ✅ | **Create · Edit · Delete · Enable/Disable**, search, stock badges, **image upload** with a thumbnail in the table *(added Day 13)* |
+| Orders | ✅ | List, filter, change status; vendor-scoped. A **refused** status change shows a notice and keeps the table — it used to blank the screen under "Could not load orders" *(fixed Day 13.1)* |
+| Festival Kits | ✅ | **Create · Edit · Delete · Enable/Disable**, search, **image upload**, and an **inline item editor** — add a product, set its quantity and its required/optional flag, remove it |
 | Rituals (Pujas) | ✅ | Same screen shape as kits, from one shared component. Create · Edit · Delete · Enable/Disable, inline samagri editor |
 | Vendors | ✅ | **Create · Edit · Delete · Enable/Disable**, assign a delivery area, search. Creating a shop promotes its account to the vendor role |
 | Demand Forecast | ✅ | Restock table, sparklines, MAPE, per-row "Why?" |
@@ -198,6 +222,24 @@ browsable table: Bratabandha has 14 items and Daily Puja has 21, while the proje
 `PAGE_SIZE` is 12. Paginated, the editor would have silently shown an incomplete kit
 and an admin would have had no way to tell. Two tests build 14 rows and assert a bare
 list, because a `results` dict would still pass a `len()` check against a page.
+
+**The products list is unpaginated for the same reason, and it took a bug to notice.**
+It used the default page size of 12 while `Product.Meta.ordering` sorts a brand-new product
+(popularity 0) to the **last** page — so a product created through this screen's own dialog
+never appeared in the table, and "Total Products" read 12 against 36 real rows. A management
+list must show every row: a record on page 3 is invisible to the only person who can edit it.
+`AdminProductListCompletenessTests` pins it.
+
+**Images upload as multipart.** A JSON body cannot carry a file, and a hand-set
+`Content-Type: multipart/form-data` without a boundary is rejected as an empty body — both
+failures look like "the upload silently did nothing". Removing an image travels as JSON
+`image: null`, because a multipart body cannot express "no file". `ProductImageUploadTests`
+and the kit tests cover create, patch, removal, a rejected non-image, and that ownership
+scoping survives the new transport.
+
+> `Category.image` still has no upload widget, and that is deliberate rather than an
+> oversight: no storefront screen renders a category image, so a control for it would let an
+> admin upload a picture nothing displays.
 
 **Item rows are editable in place.** Both detail views are
 `RetrieveUpdateDestroyAPIView`, not delete-only — otherwise changing a quantity from 1
@@ -307,18 +349,70 @@ Honest list of gaps, so nothing here is mistaken for finished work.
 
 | Feature | Status | Impact |
 |---|---|---|
-| Payment gateway | ❌ | `esewa`/`khalti` are **mocked** — they just mark the order paid |
+| Payment gateway | ⚠️ | `esewa`/`khalti` are **mocked** — but they now say so. **Labelled on Day 14**: the checkout screen warns before the choice, each simulated tile carries a "Simulated" tag, and the order detail explains the `paid` badge. Driven by `orders.models.PAYMENT_METHODS_ARE_MOCKED` and served from `GET /orders/config/`. No real integration — see §6.1 |
 | Reviews / ratings | ✅ | **Built on Day 11** — see §2.5. Removed from this list |
-| Wishlist | ❌ | — |
+| Wishlist | ✅ | **Built on Day 13** — model, API, card heart, `/wishlist` page, navbar count. Removed from this list |
 | Vendor self-service UI | ✅ | **Built on Day 9** — a vendor logs into the dashboard and sees its own products, orders and forecast, with manager-only screens hidden |
 | Kit / ritual editor UI | ✅ | **Built on Day 8** — kits and rituals are fully authorable, including their item lists |
 | Email / SMS notifications | ❌ | Reset mail sends (console backend in dev); no order notifications |
 | Real sales data | ❌ | Forecast trains on synthetic data; order volume is too low to train on |
 | Search relevance tuning | ✅ | **Rebuilt Day 12** — see §2.6. Remaining gaps are listed honestly in `docs/SEARCH.md` §7 |
-| Image upload UI | ⚠️ | Kits and products have an `image` column, but no upload widget in either dashboard screen — `image` is deliberately not in the kit write payload |
+| Image upload UI | ✅ | **Built on Day 13** — products and kits upload multipart from the dashboard, with a preview and a thumbnail in the products table. `FestivalKit.image` is now in the kit write payload (it was excluded while a JSON form could not set it) |
 | Order history for pre-Day-4 orders | ⚠️ | Backfilled with a single event, so their earlier steps show "not recorded" rather than an invented time |
 | Festival-specific kits | ⚠️ | 3 of the 6 soonest festivals have no kit (Ganesh Chaturthi, Haritalika Teej, Indra Jatra). The home page says so plainly and routes to the recommender |
 | Linking a kit to a ritual from the ritual side | ⚠️ | By design: the FK is on the kit (`FestivalKit.puja`), because a kit declares which ritual it serves and one ritual may have several bundles. The kits page sets it; the rituals page reports it read-only |
+
+### 6.1 Mocked payments are labelled, not hidden *(Day 14)*
+
+**Still not integrated** — but no longer able to mislead.
+
+`POST /orders/checkout/` handles an `esewa` or `khalti` order by setting
+`payment_status = 'paid'` and `status = 'confirmed'` **with no gateway involved**: no
+redirect, no signature check, no callback. That is a reasonable demo shortcut. What was
+not reasonable is that nothing anywhere said so. The checkout screen offered eSewa and
+Khalti as ordinary choices, and the customer was then shown a green **paid** badge — a
+screen reporting money as received when none was.
+
+This is the same rule the project already applies to the demand forecast, where a
+synthetic dataset is banner-labelled and `SyntheticSalesRecord` is a separate table so
+fabricated rows can never be mistaken for real ones. A mocked gateway deserves the
+same honesty as fabricated sales.
+
+**One constant decides it.**
+
+```python
+# orders/models.py
+PAYMENT_METHODS_ARE_MOCKED = {'cod': False, 'esewa': True, 'khalti': True}
+```
+
+Everything downstream reads it: `OrderSerializer.payment_is_mocked` per order, and
+`GET /orders/config/` → `payment_methods[].is_mocked` for the form. Flipping a value
+to `False` when a real integration lands removes the labels everywhere at once,
+which is the only way a disclosure like this stays true over time.
+
+| Surface | What it now says |
+|---|---|
+| Checkout, before the choice | Bordered notice: *"Demo build — no real payment is taken"* |
+| Each simulated tile | A `Simulated` tag **on the tile itself**, not only in the banner |
+| Order detail | *"This is a demo order. 'paid' above is simulated — eSewa was not contacted and no money changed hands."* |
+| Order status history | The confirmed event reads *"simulated — no gateway was contacted and no money was taken."* |
+| `cod` | **Nothing** — cash is genuinely collected, so labelling it would make the label meaningless |
+
+The last row is the one worth keeping. A disclosure applied to everything is not a
+disclosure, so the browser check asserts `cod` is *not* labelled, alongside asserting
+that the two mocked methods are. Both directions are tested because either mistake
+destroys the signal.
+
+**Covered by:** 6 backend tests (`MockedPaymentDisclosureTests`, including that the flag
+is derived and cannot be forged by a client) and 7 browser assertions.
+
+### Fixed on Day 15c (2026-09-22)
+
+| Issue | Detail |
+|---|---|
+| **`/analytics/inventory/` existed, worked, and was reachable by nobody** | Built, vendor-scoped, routed and documented since Day 2 with **no test and no client caller**. Now has 9 tests and a **Stock Health** panel on the dashboard home. |
+| **The dashboard harness raced a loading skeleton** | `the three seeded delivery areas are still listed` failed on **2 of 3 consecutive runs** while all three areas were in the database; one run crashed with no summary at all. Deleting the scratch row sets `loading = true`, and `AreasPanel` renders `.skeleton-line` divs **instead of** the table; the harness waited only for the scratch *name* to disappear, which happens the moment the skeletons mount. A loading state and an empty result are indistinguishable through `innerText`. Fixed by waiting for a real row, asserting the row count, and guarding an unguarded `waitForSelector` that threw out of `main()`. |
+| **Two low-stock test expectations were wrong, and the failures taught the contract** | `stock__lt=10` **includes `stock=0`**, so the low-stock and out-of-stock lists are **nested, not disjoint**. Pinned by `test_out_of_stock_is_a_subset_of_low_stock` — a screen rendering both would otherwise show those rows twice. |
 
 ### Fixed on Day 12 (2026-09-21)
 

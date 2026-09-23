@@ -3,6 +3,7 @@ from .views import (
     CategoryListView, CategoryProductsView, ProductListView, ProductSearchView,
     ProductDetailView, FeaturedProductsView, AreaListView,
     ProductReviewListCreateView, ReviewDetailView,
+    WishlistListCreateView, WishlistItemView,
     AdminProductListCreateView, AdminProductDetailView,
     AdminCategoryListCreateView, AdminCategoryDetailView,
     AdminAreaListCreateView, AdminAreaDetailView,
@@ -33,6 +34,11 @@ urlpatterns = [
     path('categories/<slug:slug>/', CategoryProductsView.as_view(), name='category-products'),
     path('areas/', AreaListView.as_view(), name='area-list'),
     path('reviews/<int:pk>/', ReviewDetailView.as_view(), name='review-detail'),
+
+    # Wishlist. Literal, so it must precede the slug patterns below — otherwise
+    # `<slug:slug>/` would match `wishlist` as a product slug and 404 the endpoint.
+    path('wishlist/', WishlistListCreateView.as_view(), name='wishlist'),
+    path('wishlist/<int:product_id>/', WishlistItemView.as_view(), name='wishlist-item'),
 
     # --- Admin (literal `admin/` prefix, so it must precede the slug patterns) ---
     path('admin/products/', AdminProductListCreateView.as_view(), name='admin-product-list'),

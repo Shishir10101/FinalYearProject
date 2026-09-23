@@ -2,8 +2,899 @@
 
 Analysis date: 2026-09-18
 Method: full source inspection + live server probing.
-Last updated: 2026-09-21 (**Day 12 complete** — domain-aware search. Days 11 and earlier are
-complete.)
+Last updated: 2026-09-23 (**Day 16 complete** — the store is renamed **Puja Sewa**, every
+product/category/kit now carries a real photo, and the landing page's scroll jank is fixed and
+measured. Days 15c, 15b, 15, 14b, 14, 13.1 and earlier are complete.)
+
+---
+
+## Day 16 Completed (2026-09-23) — a rebrand, 52 real photos, and a landing page that scrolled badly
+
+### 1. The broken images were one endpoint, not the media setup
+
+The storefront's "Recommended For You" row rendered as broken-image icons. `media/` was
+serving correctly the whole time — the first probe said `size 0`, which was the **`curl -o
+/dev/null` exit-23 artifact**, and because that exit code broke an `&&` chain the settings
+grep never ran and `MEDIA_URL` looked missing. It is not.
+
+The real cause: **`/api/festivals/recommendations/` was the only endpoint returning *relative*
+image URLs** (`/media/products/x.png`). Every other endpoint returned absolute ones. The
+storefront resolved the relative form against its own origin on `:3000` and 404'd.
+
+Root cause was in `festivals/recommender.py`: `serialize_recommendations()` built the
+serializer as `serializer_class(entry.product)` with **no `context={'request': request}`**.
+A DRF `ImageField` needs the request to call `build_absolute_uri()`; without it, it silently
+falls back to the relative path. Generic views pass context automatically — this helper is
+called by hand, so it had to be threaded through explicitly. **A serializer built by hand is a
+serializer missing its context.**
+
+### 2. Real imagery — `manage.py fetch_demo_images` (new)
+
+Before: **5 image files** for 35 products (one generic placeholder reused across most of
+them), **all ten categories with no image at all**, and every file was JPEG data behind a
+`.png` extension. Now 52 relevant photos, 600×600 JPEG q82, with per-file attribution in
+`media/IMAGE-CREDITS.md` (Commons images are CC/PD and require it).
+
+Two things this cost, both worth keeping:
+
+- **Commons returns `429` and the API helper swallowed it**, so a throttled row was
+  indistinguishable from "nothing found" and silently became a fallback tile. Two runs of the
+  *same code* produced *different* fallback lists — that was the tell. Now it retries with
+  exponential backoff, honouring `Retry-After`.
+- **A wrong photo is worse than a drawn tile.** Keyword matching cannot see a near-miss, and
+  Commons is full of them: *conch fritters* for "conch shell", *coconut cookies* for "dried
+  coconut", an *incense-making machine* for "chandan agarbatti", a *chemical condensation
+  diagram* for "benzoin resin", a *balloon* for "kalash", and a **portrait of the writer
+  Jaishankar Prasad** for "prasad". All are now rejected by keyword. One row of 52 (Hawan
+  Samagri Mix) remains a drawn tile, which is honest rather than wrong.
+
+The quality check that actually worked was **looking at the images**: a labelled contact sheet
+rendered with Pillow and read back as an image (`docs/_evidence/2026-09-23-demo-imagery-contact-sheet.jpg`).
+No assertion would have flagged a cookie standing in for a coconut.
+
+### 3. The landing-page scroll jank had four real causes
+
+1. **`backdrop-filter: blur(12px)` on the `position: sticky` navbar** — the compositor re-blurs
+   everything scrolling beneath a full-width 70 px bar on every frame. Replaced with an opaque
+   `var(--bg-primary)`, visually identical at 92 % alpha over a cream page.
+2. **`animation: pulse 2s infinite` on the navbar logo** — an infinite transform inside an
+   always-visible sticky element keeps it repainting forever, for a decoration nobody reads as
+   motion.
+3. **Two 400 px rotating circles with `border: 2px dashed` in the hero** — a dashed border on a
+   circle is expensive to rasterize and, unpromoted, was re-rasterized every frame. The design
+   is kept; `will-change: transform` lifts each onto its own layer.
+4. **~7 MB of eager image decode** — 11 cards × ~700 KB originals. Now `loading="lazy"` +
+   `decoding="async"`, and the new images are 40–70 KB each.
+
+No scroll listeners and no request loops were involved. The "only after login" impression was a
+red herring — the cost was always present; logging in simply made the page long enough to
+scroll.
+
+**The check that keeps it honest:** `frontend/scripts/scroll_probe.mjs` scrolls the page in a
+real browser and counts frames over 50 ms. Nothing else in the project could see this — the
+unit tests do not render, `storefront_check.mjs` asserts content rather than smoothness, and the
+build passes either way.
+
+### 4. Rebrand: the store is now **Puja Sewa**
+
+The judgement call worth recording: **the store's name changed; the merchandise category did
+not.** "puja samagri" is what the shop sells — and it is also one of the six required discovery
+entry points — so it stays wherever it means the goods. `AGENTS.md` §1 now says so explicitly.
+
+Renamed: navbar logo, footer brand and copyright, `<title>`, hero H1, the password-reset email
+subject *and* body, `DEFAULT_FROM_EMAIL`, the `seed_data` help text, the banner in the six
+tracked analysis scripts, `README.md`, `RUN.md`, `AGENTS.md` §1.
+
+Deliberately **not** renamed: `admin@pujasmagri.com` (a seeded account identifier that matches
+the live database and `docs/API-SPEC.md` — renaming would desync seed from data),
+`vendor@pujasmagri.com` (inside a migration, which is history and must not be edited), and the
+generic merchandise uses in metadata, docstrings and `docs/FEATURES.md` §1. The metadata
+description and keywords keep "puja samagri" on purpose: search traffic arrives on the goods,
+not on the brand.
+
+### Verification
+`manage.py test` → **498 tests, OK**. `storefront_check.mjs` → **136 passed, 0 failed** against
+a production build. Scroll probe → **0 long frames of 354, worst 22 ms**, 12 images, 0 broken,
+0 relative. All 52 images serve 200 with real bytes. The old brand name appears **0 times** on
+all seven storefront routes. The reset email was triggered live and read out of the console
+backend, confirming the rebrand reached the email as well as the screen. Harness leftovers
+purged (17 orders across the session); stock re-checked at **0 of 35 products drifted**.
+
+Two traps hit along the way, both now in `AGENTS.md`:
+- **A matching PID is not proof of a stale server.** Windows reuses PIDs, so the replacement
+  process inherited the killed dev server's number. Verify *identity* with the build ID
+  (`cat .next/BUILD_ID`, grep the served HTML), never the PID.
+- **Never pipe a build into `head`.** `npm run build | tee log | head -14` SIGPIPEs the build
+  once `head` is satisfied, leaving `.next` half-written. It still prints `✓ Compiled
+  successfully`, then `next start` says `✓ Ready` and dies with `Unexpected end of JSON input`.
+  Redirect to a file and read it; confirm with a JSON sweep of `.next/**/*.json`.
+
+---
+
+## Day 15c Completed (2026-09-22) — the last endpoint nobody called, and a check that failed for a reason it never named
+
+**Theme:** Day 15 and Day 15b both ended the same way — *grep for an endpoint that exists but
+nothing invokes*. This is that sweep finished, and then the fallout of running it.
+
+### The finding
+
+`/api/analytics/inventory/` was fully built, correctly vendor-scoped through `scoped_products`,
+routed in `analytics/urls.py`, and documented — with **no unit test, no live assertion and no
+client calling it.** It was the one analytics endpoint with zero coverage of any kind.
+
+The trap in writing its tests is worth recording. The seeded catalogue's **minimum stock is 25
+units** and the endpoint's threshold is **10**, so on demo data *every count is legitimately
+zero*. A test written against seed data would have passed no matter what the thresholds did —
+a check that passes for the wrong reason. `InventoryAnalyticsTests` therefore sets stock
+explicitly on its own fixtures.
+
+### The contract the tests pinned, after I got it wrong twice
+
+`stock__lt=10` **includes `stock=0`**, so **`low_stock_products` and `out_of_stock_products`
+are nested, not disjoint** — every out-of-stock product also appears in the low list. That is
+correct behaviour, but it is a trap for any screen rendering both lists, because the
+out-of-stock rows would be shown twice.
+
+My first two attempts asserted `low_stock_count == 2` (it is **3** — I had forgotten `Inv Out`
+counts as low) and a vendor `total_products == 3` (it is **4** — `Inv Exactly Ten`, stock 10,
+is active). The failures, not the reading, produced the real contract.
+`test_out_of_stock_is_a_subset_of_low_stock` now pins it explicitly.
+
+### The fix
+
+A **Stock Health** panel on the dashboard home, from a fifth `Promise.all` fetch. Its empty
+state is load-bearing rather than decorative: because the seeded catalogue can never reach the
+threshold, the empty state is what the shipped demo actually shows, and an unexplained blank
+panel reads as "broken". It states the threshold and the subset relationship in words.
+
+The low-stock branch was proven with a scratch product (`ZZ E2E Low Stock Probe`, stock 3),
+observed rendering one row and `Low (3)`, then deleted — seeded data untouched, per the
+standing decision.
+
+### The harness failure that was not a regression
+
+After the purge, the dashboard harness failed **`the three seeded delivery areas are still
+listed` — on 2 of 3 consecutive runs**, with one run crashing outright and printing no summary
+at all. The database had all three areas and a clean 3/10 area/category split throughout.
+
+I had seen this exact failure earlier and explained it away as *"two harnesses running
+concurrently"*. **That explanation was wrong**, and repeating it would have buried a real bug.
+It reproduces with a single process.
+
+The actual cause: deleting the scratch row calls `load()`, which sets `loading = true`, and
+`AreasPanel` renders three `.skeleton-line` divs **instead of the table** while that is true
+(`settings/page.js:375`). The harness's `waitForFunction` only waits for the scratch *name* to
+disappear — which happens the instant the skeletons mount, **before the refetch returns** — and
+the next line then read `body.innerText()` against an empty panel.
+
+Measured at that exact instant: `skeletonCount: 3, tableRowCount: 0, hasTable: false,
+seesKathmandu: false`. After waiting for a row: `tableRowCount: 3`, all three names present.
+
+So the assertion **never tested the data.** It raced a loading state that is indistinguishable
+from "no rows" by `innerText` alone.
+
+Three changes, all the same lesson — *wait on the thing the assertion is about*:
+
+1. The seeded-areas check now waits for `.table tbody tr` before reading, and an added
+   `the areas table is populated, not merely name-free` distinguishes "zero rows" from
+   "not rendered yet". The original check could not tell those apart.
+2. The Areas tab-switch replaced a bare `waitForTimeout(1500)` with the same row wait — the
+   identical race, one assertion earlier, still latent.
+3. The Categories row wait is now `.catch(() => {})`-guarded, because an unguarded
+   `waitForSelector` timeout throws out of `main()` and takes the whole run with it. That is
+   what the silent third run was.
+
+### Verification
+
+- **498 unit tests** (489 + **9** `InventoryAnalyticsTests`), `OK`
+- Dashboard browser **112 → 119**, and **119 / 0 failed on three consecutive runs** — the
+  previously 2-of-3 flaky check now passes deterministically
+- Storefront browser **136 / 0 failed**
+- Baseline drift-checked exact after every sweep: **35 products / 4725 stock / 2380 popularity
+  / 8 orders / 3 users / 3 areas / 10 categories**, zero scratch residue
+- The purge earned its keep: the harness runs placed 7 orders, and `purge_verification_orders`
+  returned exactly 7 units and reversed exactly 7 popularity points
+
+---
+
+## Day 15b Completed (2026-09-22) — two capabilities the product could not reach
+
+**Theme:** the same question as Day 15, asked of the account endpoints instead of the
+analytics ones — *which endpoint does no client call?*
+
+### The finding
+
+An audit of every `accounts` route against storefront references returned this:
+
+| Endpoint | Backend | Storefront refs |
+|---|---|---|
+| `/auth/register/` | built | 2 |
+| `/auth/login/` | built | 15 |
+| `/auth/token/refresh/` | built | 1 |
+| `/auth/profile/` | built | 2 |
+| `/auth/password-reset/` | built | 2 |
+| `/auth/password-reset/confirm/` | built | 1 |
+| **`/auth/logout-all/`** | **built, tested, documented** | **0** |
+| **change password** | **did not exist at all** | — |
+
+`LogoutAllView` has existed since Day 7, has its own docstring calling it *"a real
+user-facing action rather than an internal one"*, appears in `verify_day7.py` and in
+`docs/API-SPEC.md` — and **no UI anywhere called it.** The project documented a security
+feature that a customer could not invoke.
+
+Separately, the only way to change a password was the **forgot-password** flow, which needs
+mailbox access and asks you to assert you have *lost* the password. A signed-in customer who
+simply wanted a different one had no screen and no endpoint.
+
+### The fix
+
+**`POST /api/auth/password-change/`** plus an **Account Security** panel on `/account`
+carrying both this and "Sign out everywhere".
+
+`PasswordChangeSerializer` deliberately **requires the current password**, and that is the
+whole security argument rather than a formality: the caller is already authenticated, so
+without it any stolen access token could be escalated into permanent account takeover — the
+thief changes the password and locks the owner out. This makes it *stricter* than the reset
+flow, which is correct rather than inconsistent: possessing an emailed reset link is itself
+proof of mailbox control, so the two are not equivalent.
+
+The change **revokes every token including the caller's own**, matching
+`PasswordResetConfirmView`. Still justifiable: leaving the old tokens alive would mean the
+change protected nothing already stolen, which is the usual reason to make it.
+
+### Verified live, every branch
+
+| Case | Result |
+|---|---|
+| anonymous | `401` |
+| wrong `current_password` | `400` — **and the old password still works afterwards** |
+| `new_password` == current | `400`, not a silent no-op reported as success |
+| `new_password` weak | `400` — Django's validators fire |
+| mismatch | `400` |
+| success | `200`, `reauthentication_required: true` |
+| the token that made the change | **`401` afterwards** |
+| old password | `401` · new password `200` |
+| `logout-all` | `200`, `token_version = 2`, token dead after |
+
+The test that gives the 400s meaning is `test_wrong_current_password_changes_nothing`: a 400
+that still wrote the password would satisfy "it returned 400" perfectly.
+
+### A harness bug, of the kind this project keeps producing
+
+The new browser section failed on three assertions and a 30-second locator timeout — **none
+of which had anything to do with the panel.** The reset section above it deliberately clears
+`localStorage` to prove a spent link is refused while signed out, so the probe account was
+not signed in and `/account` legitimately rendered its "Please login" branch. The section now
+signs the probe account in explicitly and asserts that sign-in first: **own the precondition
+you assert.**
+
+### Verification
+
+- **489 unit tests** (was 477; **+12** — `PasswordChangeTests` 9, `LogoutAllTests` 3)
+- Browser: storefront **124 → 136** (+12 — the whole Account Security panel, driven not just rendered)
+- `curl`-level check of all nine branches above, against the running server
+- Panel screenshot confirms it renders in the app's own design language, not just that the
+  selectors match
+
+---
+
+## Day 13.1 Completed (2026-09-22) — inventory that was leaking, and a seed that lied
+
+**Theme:** after closing every P1 item, an audit of the parts nobody had looked at turned up
+two defects that were **invisible by construction** — neither could be seen from the code,
+the tests, the builds or the browser checks, because both only manifest as *accumulated
+drift* over many runs.
+
+### 1. Cancelling an order never returned its stock
+
+`CheckoutView` decrements `product.stock` for every line. `AdminOrderUpdateView` wrote a
+status-history row and nothing else — so **cancelling an order leaked its inventory
+permanently.** The goods are back on the shelf, the system still counts them as gone.
+
+Reproduced before fixing: order 2 units (24 → 22), cancel, stock stays 22.
+
+Then measured. Comparing every product against the values in `seed_data.py`:
+
+```
+  Dashain Tika Set                150     24   -126
+  Cotton Wicks (Batti) - 100pcs   500    478    -22
+  ...23 products in total
+  net units lost from inventory: 538
+```
+
+That is not cosmetic. It produces **false low-stock and restock alerts**, so the demand-
+prediction feature — one of the two AI components the brief requires — was reporting on
+inventory that does not exist.
+
+**Two leaks, not one.** `purge_verification_orders` deleted the orders a sweep created and
+also never released their stock, so *every verification run* shrank the catalogue. The 538
+units came mostly from that, not from cancellations.
+
+**And a second field went with it.** Checkout increments `popularity_score` as well, and
+nothing reversed that either: measured at **591 points across 23 products**, with `Dashain
+Tika Set` at 256 against a seeded 98. That is not just a display artefact — the field feeds
+the **recommendation engine's popularity bonus** (`festivals/recommender.py`), the trending
+list, the default catalogue ordering and the search tie-break. Left alone, the demo was
+recommending whatever the test suite happened to buy.
+
+| Fix | Where |
+|---|---|
+| `release_order_stock()` / `reserve_order_stock()` / `reverse_order_popularity()` | `orders/views.py` |
+| Cancel restores stock; un-cancel re-reserves; a reinstatement with no stock is **refused** (400) | `AdminOrderUpdateView.perform_update`, atomic |
+| Purge releases stock (not for already-cancelled orders) and reverses popularity (for all of them) | `purge_verification_orders` |
+| `seed_data --reset-stock` / `--reset-kit-items` / `--reset-popularity` — the repair paths | `products/management/commands/seed_data.py` |
+
+**`popularity_score` is deliberately not reversed on cancellation**, and *is* reversed by the
+purge. The distinction is not "cancel or not" but **real or fixture**: a cancelled order still
+means a customer asked for something, whereas a verification order means nobody did. `stock`
+is a factual count of what is on the shelf and must be exact; `popularity_score` is a demand
+signal and is allowed to be monotonic over real traffic.
+
+### 2. `seed_data` existed twice, and the documented one never ran
+
+`AGENTS.md` said: *"`seed_data` exists twice … Only `core`'s runs. If you change seeding,
+change `core`'s; delete the other."* **That was backwards.**
+
+`core/` is the Django *project* package — `settings.py`, `urls.py` and `wsgi.py` live there —
+and it is **not in `INSTALLED_APPS`**. Django only discovers management commands from
+installed apps, so `core`'s copy was dead code that had never run, while the file the docs
+told you to edit had no effect. The live copy (`products`') had silently drifted: it never
+called `seed_pujas`.
+
+Measured on a genuinely fresh database:
+
+```
+  products             35
+  kits                  7
+  rituals (Puja)        0  <-- EMPTY
+```
+
+**The Puja entry point — one of the six `AGENTS.md` §1 requires — did not exist on a fresh
+install.** It was present here only because somebody had run `seed_pujas` by hand once. The
+dead copy is deleted, the live one is complete, and `SeedDataCompletenessTests` asserts that a
+plain `seed_data` produces every entry point.
+
+### 3. A kit had lost its own headline item
+
+`seed_data` writes kit items only `if created`, so a line removed from a seeded kit is
+**unrecoverable by re-seeding**. "Dashain Tika Set" was missing from the *Dashain Puja
+Complete Kit* — 8 items instead of 9, one required count short, and `total_price` understated
+by Rs. 180. Repaired, and `--reset-kit-items` added (re-adds missing lines, corrects drifted
+quantities, **never deletes** a line an admin added by hand).
+
+### 4. `/orders` had no browser coverage, and it needed some
+
+`/orders`, `/forecast` and `/settings` were the three dashboard screens the browser check
+never visited. Auditing `/orders` turned up a defect the whole suite had missed:
+
+**A failed status write was rendered as a failed load.** `updateStatus` set the same `error`
+state the load path uses, and the render branch for that state replaces the entire table:
+
+```
+{loading ? skeletons : error ? "Could not load orders" : table}
+```
+
+So one rejected PATCH — a transient blip, or a rule the server enforces — blanked the order
+list the admin was working through, under a heading that was simply untrue. The list had
+loaded perfectly well.
+
+Fixed by separating the two: `loadError` (fatal, may replace the screen) versus a
+self-clearing `notice` with a kind (a write outcome, table preserved) — the pattern the
+products screen already used. The same change made the post-write refresh **silent**, so
+updating one "Last change" cell no longer dropped the whole table to skeletons.
+
+**Nine new browser assertions**, including a regression guard that forces a real refusal: the
+check intercepts the PATCH with Playwright's route API and returns a `400`, then asserts that
+an error notice appears **and the table is still there**. That is the assertion the old
+behaviour would fail, and it is deterministic rather than waiting for a real failure to occur.
+
+> Writing that check found two bugs in the check itself, both worth recording. It asserted on
+> the phrase "not allowed right now" — a string the API client never produces, because it only
+> lifts `detail` / `error` / `non_field_errors` from a DRF body and falls back to its generic
+> message for a per-field error. And it asserted the table survived a *successful* change
+> immediately afterwards, which is precisely where the skeleton-blanking showed up. Assert on
+> the element's state, not on prose you assume the client emits.
+
+### 5. An interrupted sweep left a scratch area that looked like real data
+
+Chasing the final verification turned up two operational facts, both now in `AGENTS.md` §12:
+
+- **A twelve-verifier sweep does not survive in one burst here.** Partway through, the API
+  process is still listening and still logging, but requests return `000` / `503` and then
+  nothing. It is the sandboxed shell's HTTP layer saturating, not Django — the process is
+  healthy and a restart clears it. Two batches (five verifiers, restart, seven verifiers)
+  complete reliably, and both did: **796 assertions, 0 failures.**
+- **`verify_day3b` named its scratch area `Kirtipur`.** A real place name, with no marker, so
+  when a wedged server killed the run partway through, the leftover row was indistinguishable
+  from legitimate data and made `verify_day3b` *and* `verify_day3c` fail on "only the three
+  seeded areas remain" — two verifiers reporting a regression that did not exist.
+  `verify_day3c` already did this correctly with `ZZ E2E Test Area` and a pre-clean; both now
+  follow that convention. **Name scratch data so it announces itself, and pre-clean it** — a
+  run can be interrupted at any point.
+
+> The lesson generalises past this project: a verification suite whose scratch data is not
+> self-identifying cannot distinguish "the feature regressed" from "the last run was killed".
+> That is the same failure mode as a check that passes for the wrong reason, in reverse.
+
+### 6. `/forecast` and `/settings` — and the bug the second one exposed
+
+Adding the missing coverage to the last two screens found one more defect, on the screen
+whose whole job is authoring the catalogue.
+
+**Creating a category from the dashboard never worked.** The button was
+`onClick={c.save}`, and `save(override)` treats its first argument as the payload — so React
+handed it the **click event**, `JSON.stringify` ran on a synthetic event, threw on its
+circular structure, and the request never left the browser. The dialog sat open with a
+"Converting circular structure to JSON" message and the admin had no way to add a category.
+
+What kept it hidden for the life of the project:
+
+- **The other tab worked.** Delivery Areas calls a local wrapper that builds its payload
+  explicitly, so only one of the two panels was affected — and a screen that half-works looks
+  like it works.
+- **The API path is fine**, and is covered: `verify_day3b.py` creates categories over HTTP and
+  passes. The bug was purely in the button.
+- **No browser check had ever visited `/settings`.** The defect was invisible to the build, to
+  ESLint, to 471 unit tests and to every live API assertion.
+
+Fixed at the call site (`onClick={() => c.save()}`) **and** in the handler, which now rejects
+anything carrying `nativeEvent` — a React event always has one, a payload never does — so the
+mistake cannot silently recur on either panel.
+
+### Coverage added for the last two screens
+
+| Screen | Assertions |
+|---|---|
+| `/forecast` | 8 — heading, model + version, restock rows, MAPE per row, the **horizon selector actually refetching**, the per-row "Why?" explanation, and the **synthetic-provenance banner** |
+| `/settings` | 9 — both tabs, both tables, and a full **create → assert → delete** round trip on categories *and* delivery areas, plus "the three seeded areas are still listed" |
+
+The forecast banner is the assertion worth keeping: the model is fitted on **generated** data,
+and the project's rule is that it must never read as real demand. The API already carries
+`is_synthetic` and a provenance note, and the UI renders it — but only a browser can prove the
+banner is on the screen. A regression there would leave plausible-looking numbers reading as
+measured demand, which is the single most misleading thing this demo could do.
+
+### Verification
+
+- **471 unit tests**: all green
+- Browser: storefront **118**, dashboard **103** — see Day 14 below for the five routes that
+  were uncovered at this point
+- **A sweep now nets to zero.** After a full 12-verifier run plus both browser checks, both
+  purges left *no* stock drift and *no* popularity drift — `seed_data --reset-*` reported
+  nothing to repair. That is the check that the reversal paths are complete rather than
+  merely present.
+- Every product's stock matches `seed_data.py`; 89 ritual items; the Dashain kit has 9
+- All 8 seeded orders and 3 real accounts intact
+
+> **A note on how these were found.** Not by reading code — both were found by *comparing two
+> things that should agree*: two dashboard panels (the Day 13 double-count), and the live
+> catalogue against the seed source (this one). The second comparison is now a habit worth
+> keeping: after a verification sweep, ask what the sweep moved and whether anything puts it
+> back. `git status`, `media/`, and the seeded numbers are all part of that answer.
+
+---
+
+## Day 14 Completed (2026-09-22) — the five storefront routes nobody had ever loaded
+
+**Theme:** Day 13.1 closed with a named task — the storefront had browser coverage on 85
+checks but had **never visited five of its routes**. This closes them, and the headline is
+that the task was correctly scoped: it found a real defect, plus a piece of documentation
+that was making a false claim about the app's own behaviour.
+
+### 1. `notFound()` on `/pujas/[slug]` returns HTTP 200, and two comments said 404
+
+The most interesting finding, because the code was *right* and the documentation was *wrong*.
+
+`src/app/not-found.js` carried this:
+
+> `PujaDetailPage` calls `notFound()` for an unknown ritual slug, **which returns a real HTTP
+> 404** — better than a 200 carrying a "not found" message inside it.
+
+Measured with curl:
+
+```
+$ curl -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/pujas/zz-no-such-ritual-12345
+200
+```
+
+**It returns 200.** The cause is `src/app/pujas/loading.js`: a `loading.js` opens a Suspense
+boundary, so the response has begun streaming before the Server Component's `fetch` resolves.
+`notFound()` then renders the 404 UI into an already-committed 200. This is precisely the
+constraint `AGENTS.md` documents, and Next injects `<meta name="robots" content="noindex">`
+as the mitigation — verified present on the response.
+
+So the behaviour is correct, understood, and unfixable without giving up the loading skeleton
+that makes the ritual pages feel fast. **What was wrong was the claim.** A future session
+reading that comment would have assumed a status-code guarantee that does not exist, and
+would have been entitled to "fix" a real bug into a fake one. Both comments (in
+`not-found.js` and in `pujas/[slug]/page.js`) now state what actually happens, with the
+measurement that establishes it.
+
+This is the same failure mode the Day 13 `count == 12` note describes: **a check that passes
+for the wrong reason is worse than no check.** Here it was a *comment* that was confidently
+wrong, which is the same hazard with a longer fuse.
+
+### 2. The five routes, and what each now proves
+
+| Route | Assertions | The one that matters |
+|---|---|---|
+| `/pujas/[slug]` | 6 | loaded **by URL, not by click** — a client-side nav updates the URL before the Server Component payload renders, so only a direct load exercises `await params` |
+| `/account/orders/[id]` | 4 | loaded by **reload**, so the timeline is fetched by the route rather than inherited from the checkout response |
+| `/auth/register` | 5 | client-side refusal → valid submit → **lands signed in** |
+| `/auth/forgot-password` | 5 | the generic notice **does not leak whether the address exists** |
+| `/auth/reset-password` | 12 | the new password **actually signs in**, and the old one does not |
+
+Storefront coverage: **85 → 118 assertions.**
+
+### Why "by URL, not by click" is the assertion worth keeping
+
+Everything on `/pujas/[slug]` was previously reached by *clicking a link from `/pujas`*. That
+hides the single most dangerous trap in this Next version: `params` is a **Promise**, so
+`const { slug } = params` yields `undefined` and every valid ritual would `notFound()`. The
+build catches nothing — the mistake is a runtime value, not a syntax error.
+
+The existing check did exercise the page, so it looked covered. It was not: a click through
+client-side navigation can carry the slug in the RSC payload in a way a cold load does not.
+The new check loads the URL directly and asserts the **ritual's own title** renders.
+
+The reset flow is asserted the same way — the only thing that distinguishes "the form said
+Saved" from "the password changed" is logging in with the new password afterwards, which the
+harness now does, in the same browser session that owns the token.
+
+### Verifier bugs found and fixed in the harness itself
+
+Four checks failed on the first run. **None was an app bug** — all four were the harness
+being wrong, which is worth recording because the instinct is to assume the opposite:
+
+1. **A locator read after navigating away.** `hasResetLink` was computed on the
+   forgot-password page, then the run navigated to `/auth/reset-password` and only *then*
+   read the link's `href`. The link was gone; `getAttribute` timed out. Fixed by reading the
+   href while the notice is still on screen.
+2. **Asserting a behaviour the app never claimed.** The reused-link check expected
+   `/auth/reset-password` to *reject* a spent token on load. The page renders the form
+   optimistically — it cannot know the token is spent until it asks the API, and it only asks
+   on submit. Rewritten to submit and assert the refusal, which is a stronger check than the
+   original: it proves the server really refuses, and that the form is then withdrawn.
+3. **A regex that did not match the app's copy.** `/not\s*found|404/` against a page whose
+   heading is "We could not find that page". The assertion was correct in intent and wrong in
+   text.
+4. **An allowlist that missed the raw network lines.** Playwright reports non-2xx both as the
+   API client's parsed error *and* as a bare `Failed to load resource: status of 400` line.
+   Only the first was allowed through, so the guard failed on deliberate traffic.
+
+The deliberate 4xx traffic the new sections generate (bad password, mismatched confirmation)
+is allowlisted **by exact message**, not by status code. A blanket "ignore 400" would hide the
+next genuine failure — see the Day 13 note on checks passing for the wrong reason.
+
+### Verifier hygiene
+
+The throwaway account is named `verifydaybrowser<stamp>` — self-announcing, unique per run, and
+matched by the existing `purge_verification_users` prefix. The harness **runs that sweep
+itself** at the end of the pass and asserts the account is gone, so the cleanup cannot be
+silently skipped; the footer still names the command for a killed run. This follows the
+`ZZ E2E …` convention established on Day 3.
+
+Confirmed after six consecutive full runs:
+
+| | seed declares | live |
+|---|---|---|
+| products | 35 | 35 |
+| total stock | 4725 | 4725 |
+| total popularity | 2380 | 2380 |
+
+**Exact agreement, no drift.** 3 users, 8 seeded orders, 0 carts, 0 stray reviews, 0 wishlist
+rows; `media/` untouched.
+
+### Verification
+
+- **471 unit tests**, all green
+- Browser: storefront **118** (was 85), dashboard 103
+- Purges net to zero across six consecutive runs
+- No new dependencies, no stack change
+
+---
+
+## Day 14b Completed (2026-09-22) — the mocked gateways now admit it
+
+**Theme:** with every P0 closed, the remaining risk the project's own register named was
+P2: *"Live eSewa/Khalti integration (the current mock marks them paid unconditionally —
+fine for a demo, **must be labelled as mocked**)."* It was not labelled. This labels it.
+
+### The defect
+
+`POST /orders/checkout/` handled an `esewa`/`khalti` order by setting
+`payment_status = 'paid'` and `status = 'confirmed'` **with no gateway involved** — no
+redirect, no signature check, no callback. A reasonable demo shortcut.
+
+What was not reasonable: **nothing anywhere said so.** The checkout screen offered eSewa
+and Khalti as ordinary choices and the order detail then rendered a green **paid** badge.
+A customer could reasonably conclude money had changed hands. The code comment said
+`# Mock payment` — visible to a developer, invisible to the person the screen was for.
+
+This is the same rule the project already applies to the demand forecast, where synthetic
+data is banner-labelled and `SyntheticSalesRecord` is a separate table so fabricated rows
+can never be mistaken for real ones. **A mocked gateway deserves the honesty given to
+fabricated sales.** Same class of defect as a number presented as measured when it is
+generated.
+
+### The fix: one constant, read everywhere
+
+```python
+# orders/models.py
+PAYMENT_METHODS_ARE_MOCKED = {'cod': False, 'esewa': True, 'khalti': True}
+```
+
+Nothing downstream restates this. `OrderSerializer.payment_is_mocked` derives from it per
+order; `GET /orders/config/` publishes `payment_methods[].is_mocked` for the form.
+Flipping a value when a real integration lands removes every label at once — the only way
+a disclosure like this stays true over time instead of rotting into a lie.
+
+| Surface | What it now says |
+|---|---|
+| Checkout, **before** the choice | *"Demo build — no real payment is taken"* |
+| Each simulated tile | A `Simulated` tag **on the tile**, not only in the banner above it |
+| Order detail | *"'paid' above is simulated — eSewa was not contacted and no money changed hands."* |
+| Status history | *"eSewa payment simulated — no gateway was contacted and no money was taken."* |
+| **`cod`** | **Nothing** — cash genuinely is collected on delivery |
+
+### The row that matters most
+
+`cod` is deliberately **not** labelled, and that is asserted in both the unit tests and the
+browser check. A disclosure applied to everything is not a disclosure — it teaches the
+reader to ignore it. Getting this wrong in the *safe* direction is still wrong, which is
+why the test suite pins both halves rather than only the one that protects the customer.
+
+### Three verifier bugs found on the way
+
+Recorded because each is a repeat of a known trap:
+
+1. **A check that never ran and never said so.** `verify_day14.py`'s first draft called
+   `request('GET', f'/api/orders/{id}/')` **without the token**. The endpoint is
+   authenticated, so it returned 401, and the `if status == 200:` guard silently skipped
+   **four assertions** — no FAIL, no SKIP, no output. The section looked like it had
+   passed. Now the read is *asserted* rather than guarded, so a regression fails loudly.
+2. **A restart that bound alongside the old server.** Two processes ended up LISTENING on
+   :8000 at once and the **stale one won every request**, so a correctly written new field
+   appeared never to have been added. `--noreload` means the old process never dies.
+   `netstat -ano | grep :8000` must show no `LISTENING` row — `TIME_WAIT` is fine.
+3. **A fixture added with no purge path.** The `verify_day14_disclosure.py` marker was
+   missing from `purge_verification_orders.MARKERS`, so its orders survived the sweep.
+   Caught by *running the purge* rather than assuming it covered the new file. Now added.
+
+### Verification
+
+- **477 unit tests** (was 471; +6 in `MockedPaymentDisclosureTests`)
+- `verify_day14.py` — **21 live assertions**, new
+- Browser: storefront **124** (was 118; +7 assertions across checkout and confirmation)
+- Total live assertions **817**
+- After the full sweep: seed and live agree exactly — 35 products, 4725 stock,
+  2380 popularity, 8 seeded orders, 3 accounts, 0 carts. **No drift.**
+
+
+### Resume with
+
+```bash
+cd backend && ./venv/Scripts/python.exe manage.py test        # 477 tests, all green
+./venv/Scripts/python.exe manage.py seed_data --reset-stock --reset-kit-items --reset-popularity
+./venv/Scripts/python.exe manage.py runserver 127.0.0.1:8000 --noreload
+./venv/Scripts/python.exe verify_day13.py                     # 68 assertions
+./venv/Scripts/python.exe verify_day14.py                     # 21 assertions
+```
+
+---
+
+## Day 15 Completed (2026-09-22) — a dashboard that lied to the one role nobody tested
+
+**Theme:** with every P1 item closed, the question was not "what is next" but "which page
+has never been loaded by *which role*". Three earlier defects in this project — the dead
+"create a category" button, the invisible `/orders` failure replacement, the mocked
+gateways — were all found by coverage *gaps*, not by reading code. This was the last one.
+
+### The defect
+
+`/analytics/sales/` and `/analytics/areas/` have both returned a `scope` field
+(`'all' | 'vendor'`) since Day 9. **No client code ever read it.** Grepping the whole
+dashboard for `scope` returned two hits, and both were comments.
+
+So both audiences got the same page, the same panels, and different numbers — with nothing
+on screen saying which. Measured on the seeded data:
+
+| | `scope` | Total Revenue | Orders | Products |
+|---|---|---|---|---|
+| `admin` | `all` | **Rs. 6,760** | 8 | 35 |
+| `vendor1` | `vendor` | **Rs. 1,810** | 3 | 12 |
+
+The Total Revenue card's caption was the literal string **`All time`**, hardcoded, for every
+role. A vendor was therefore told that Rs. 1,810 was their all-time revenue for the whole
+shop, when the shop-wide figure was Rs. 6,760 — and 1,810 is 27% of it. **The API was
+correct the entire time. The screen was the thing that lied**, which is precisely the class
+of defect no API verifier can see.
+
+### Why nothing had caught it
+
+The vendor section of `browser_check.mjs` was genuinely thorough — login, scoped product
+list (12 of 35), every row owned by the same shop, a locked vendor field. But it made
+`/reviews` its **last** page for the vendor (deliberately, so nothing downstream depended on
+navigating back to a scoped list) and **never visited `/`**. The dashboard home is the only
+page whose numbers change meaning by role, and it had never been rendered as a vendor by any
+check in this project.
+
+### The fix
+
+Scope is now **read from the response**, never inferred from the cached role — if the two
+ever disagree the panel must describe what it actually fetched:
+
+```js
+const scope = data?.scope || areaData?.scope || null;
+const isVendorScope = scope === 'vendor';
+```
+
+A banner (`data-testid="analytics-scope"`, `data-scope={scope}`) states outright whose
+figures are on screen; the captions, the "Orders by Status" heading and the areas note all
+follow the same flag. The admin sees "Shop-wide" and the plain "All time"; a vendor sees
+"Vendor scope", **"Your products, all time"**, and "your products" tags. The banner renders
+only when `scope` is present, so an older API build degrades to the previous behaviour
+rather than inventing a claim.
+
+### The assertion that keeps it honest
+
+A scope banner over a figure identical to the admin's would be pure decoration. The harness
+now reads **both** roles' Total Revenue and asserts they differ, and that the vendor's is the
+smaller — 1,810 vs 6,760.
+
+Two internal consistency claims were re-checked under vendor scope as well: the area rows
+still sum to their own headline (1,810), which is the invariant `AreaBreakdownView` was built
+to guarantee.
+
+### A false finding I produced, and corrected
+
+Nominated at the start of this session: *"there is no vendor analytics — `analytics/urls.py`
+has six routes and none is vendor-scoped."* **Wrong.** The routes are global *by name* and
+scoped *by content*; `scoped_products` / `scoped_orders` were applied to every view on Day 9.
+I had inferred an absence from a URL listing without exercising a single endpoint.
+
+The roadmap line I "corrected" on that basis was itself wrong twice over: the area half was
+already marked done a few rows above it, so the file contradicted itself. Both are now fixed
+with the reasoning recorded, because the failure mode — **a route name is not evidence about
+what a route returns** — is the same shape as a check that passes for the wrong reason.
+
+### Verification
+
+- **477 unit tests** — unchanged, all green (this change is dashboard-only; no API surface moved)
+- `verify_day9.py` — **49 live assertions**, re-run for the vendor-scoping invariant
+- Browser: dashboard **112** (was 103; +9 assertions — four in the vendor section, five
+  cross-role, and the `parseRs` self-test retained)
+- Screenshots confirm the render, not just the selectors: `shot_15_vendor_home.png` shows the
+  vendor banner, Rs. 1,810 and "Your products, all time"; `shot_14_areas.png` shows the admin
+  counterpart, "Shop-wide" and "All time"
+- Probe user from `verify_day9.py` purged: `admin`, `testuser`, `vendor1` remain
+
+---
+
+## Day 13 Completed (2026-09-22) — the last three P1 gaps, and a bug two panels found
+
+**Theme:** three items `FEATURES.md` still listed as open, closed together because they
+share one property — each was **invisible to the existing suite**. The API tests passed
+without them, both builds passed without them, and the storefront looked complete without
+them.
+
+| # | Piece | Status |
+|---|-------|--------|
+| 1 | `WishlistItem` model in `products` — one per (user, product), `product` CASCADE | **DONE** — migration `products/0006_wishlistitem.py`, applied |
+| 2 | `GET`/`POST /api/products/wishlist/` + `DELETE .../wishlist/<product_id>/` | **DONE** — create-or-**get**, so a double-clicked heart is not a 400 |
+| 3 | `is_wishlisted` on the product detail payload | **DONE** — the heart is right on first paint, not after a round-trip |
+| 4 | `WishlistContext` + heart on `ProductCard` + `/wishlist` page + navbar count | **DONE** — `wishlistLoaded` is a *loaded* flag, not a loading flag |
+| 5 | Multipart image upload — products **and** kits, with preview and thumbnail | **DONE** — `ImageField` + `api.upload()`; `FestivalKit.image` is now in the kit write payload |
+| 6 | `GET /api/analytics/areas/` — orders and revenue by delivery area | **DONE** — rows sum to `/analytics/sales/`, vendor-scoped |
+| 7 | Dashboard "Orders by Delivery Area" panel | **DONE** — with a share bar, and a badge for an area that no longer exists |
+| 8 | 51 new unit tests | **DONE** — 426 total, all passing |
+| 9 | `verify_day13.py` — 63 live assertions | **DONE** |
+| 10 | 16 new browser assertions | **DONE** — storefront 79 → 85, dashboard 64 → 74 |
+
+### The bug that only a cross-check could find
+
+`scoped_orders` was `Order.objects.filter(items__product__vendor=vendor).distinct()` — a
+**join**. A vendor with two of their products in one order produced two rows, so a grouped
+`values('shipping_city').annotate(Sum('total_amount'))` counted that order's total twice.
+Measured on the seeded data: **2780 where the truth was 1810**.
+
+What makes this worth writing down is that it was **invisible from either side alone**:
+
+- a flat `.aggregate(Sum(...))` on the same queryset was *correct*, so `/analytics/sales/`
+  had always been right;
+- `.distinct()` does not rescue it — Django applies DISTINCT to the grouped rows, so the
+  duplication survives into the aggregate.
+
+It surfaced only because the new panel asserted that its rows sum to the headline figure on
+the *other* endpoint. Fixed at the root by scoping with an `Exists` subquery, which produces
+no join at all, so `count()`, a flat `aggregate()` and a `values().annotate()` are all
+correct by construction. `VendorOrderScopingTests` guards it.
+
+### The dashboard was hiding a third of the catalogue
+
+The admin product list used the project-wide default page size of 12. `Product.Meta.ordering`
+is `['-popularity_score', '-created_at']`, so a product created through the dashboard's own
+dialog (popularity 0) sorted to the **last** page — the row most likely to need attention was
+the one that was hidden. Measured: the dashboard read **"Total Products 12"** against 36 real
+rows, and a product created in the dialog never appeared in the table.
+
+Found by the new browser assertion that a created product is visible *unfiltered*. Fixed with
+`pagination_class = None`, matching every other admin collection (kits, rituals, vendors,
+reviews) — the same argument `AdminReviewListView` already carried: a row on page 2 is
+invisible to the only person who can act on it. The storefront's catalogue had this defect too
+and was fixed on Day 12, in the other direction, because it *is* browsable content.
+
+### Three verifier bugs found while writing the verifier
+
+- It assumed `POST /api/auth/register/` returned a token. It does not — it returns a success
+  message and the new user, so a token has to be obtained by logging in afterwards. The first
+  run reported a fatal error instead of a result.
+- It asserted the public kit payload carried `items`. It never had; the real keys are
+  `item_count`, `original_price` and `total_price`. A verifier asserting a literal it did not
+  read fails in a way that reads exactly like a product bug. The expected keys are now read
+  off the live response.
+- **It modified seeded data.** The kit image check uploaded onto `kits[0]` — the seeded
+  *Bratabandha Ceremony Kit* — and never restored the picture, so **running the verifier
+  permanently changed the demo data**. It surfaced only from reading `git status` and finding
+  an unexpected `media/kits/` directory, then asking the database which files it referenced.
+  The check now creates its own scratch kit and deletes it, and two assertions pin that no
+  seeded kit points at a test upload and no scratch kit was left behind.
+
+> The general rule, already in `AGENTS.md` §12, is "own every precondition you assert".
+> This is its sharper edge: **a verifier must not mutate data it does not own.** Reading
+> `git status` and the `media/` directory after a sweep is part of the sweep.
+
+### And one that **passed** for the wrong reason — the most instructive of the four
+
+The dashboard check compares the area-panel revenues against the headline "Total Revenue",
+which is the assertion that caught the double-counting bug above. It passed on its first run.
+It then failed on a later run with `areas=1.95 headline=0.195`.
+
+The app was right both times. The **parser** was wrong:
+
+```js
+String('Rs. 19,500').replace(/[^\d.,-]/g, '')   // -> '.19,500'
+  .replace(/,/g, '')                            // -> '.19500'
+Number('.19500')                                // -> 0.195
+```
+
+Stripping everything outside `[\d.,-]` **keeps the period in `Rs.`**, and the leading dot
+turns the number into a decimal fraction. It agreed with the area sum on the first run only
+because every figure was then three digits, so the leading dot divided *everything* by 1000
+uniformly and the equality survived by accident. The moment the total crossed into four
+figures, the accidental agreement broke.
+
+Two things were changed, and both are the point:
+
+- the parser now anchors on a **digit** (`/\d[\d,]*(?:\.\d+)?/`), so a currency prefix cannot
+  contribute a stray separator;
+- the check **self-tests the parser** against nine known inputs before trusting it, so a
+  helper that quietly returns a tenth of the truth fails loudly instead of producing a number
+  that happens to match.
+
+> A check that passes for the wrong reason is worse than a missing check, because it is
+> recorded as evidence. This is the same failure mode as `verify_day3c.py` asserting
+> `count == 12` — which was simultaneously the right answer and a first page that could not be
+> distinguished from one — and it is why `AGENTS.md` §12 now says to assert the *invariant*,
+> not a number that happens to hold.
+
+### Resume with
+
+```bash
+cd backend && ./venv/Scripts/python.exe manage.py test        # 426 tests, all green
+./venv/Scripts/python.exe manage.py runserver 127.0.0.1:8000
+./venv/Scripts/python.exe verify_day13.py                     # 63 assertions
+```
+
+Browser checks — note that on Windows `NODE_PATH` must be a **Windows** path, because Node
+resolves it itself and does not understand Git-Bash's `/tmp` mount:
+
+```bash
+NODE_PATH='C:\Users\<you>\AppData\Local\Temp\harness\node_modules' \
+  node frontend/scripts/storefront_check.mjs      # 118 assertions
+NODE_PATH='C:\Users\<you>\AppData\Local\Temp\harness\node_modules' \
+  node admin-dashboard/scripts/browser_check.mjs  # 74 assertions
+```
 
 ---
 
@@ -1605,23 +2496,29 @@ No `password_reset` endpoint, no email config, no page. The brief requires it.
 
 Grouped by whether it blocks the demo.
 
-**Blocks P0:**
-- A production build of the customer frontend (B1).
-- Delivery fee in the order total (B2).
-- A real, ranked, explainable recommendation engine (B3).
-- **Product demand prediction — entirely absent.** No model, no endpoint, no page, no data.
-- Vendor role and vendor system — absent.
-- Admin/customer/area management in the dashboard — absent.
-- Order tracking surface for the customer beyond a static status badge.
+**Blocks P0:** — **all closed.** Kept as a list so the history is readable.
+
+- ~~A production build of the customer frontend (B1).~~ ✅ Day 1
+- ~~Delivery fee in the order total (B2).~~ ✅ Day 1
+- ~~A real, ranked, explainable recommendation engine (B3).~~ ✅ Day 2
+- ~~**Product demand prediction — entirely absent.**~~ ✅ Day 2 — model, endpoint and
+  dashboard panel; trained on synthetic data, labelled as such in three places.
+- ~~Vendor role and vendor system — absent.~~ ✅ Day 3 / Day 9
+- ~~Admin/customer/area management in the dashboard — absent.~~ ✅ Day 3 / Day 8
+- ~~Order tracking surface for the customer beyond a static status badge.~~ ✅ Day 4
 
 **P1:**
-- Wishlist / favourites.
+- ~~Wishlist / favourites.~~ ✅ **BUILT Day 13** — model, endpoints, card heart, `/wishlist`
+  page and a navbar count. See §Day 13.
 - ~~Reviews and ratings (no `Review` model exists).~~ ✅ **BUILT Day 11** — model, endpoints,
   storefront section and `/reviews` moderation. See §Day 11.
 - ~~Password reset.~~ ✅ **BUILT Day 4**, sessions revoked Day 7.
-- Per-vendor and per-area analytics.
+- ~~Per-vendor and per-area analytics.~~ ✅ **Vendor scoping BUILT Day 9**;
+  **per-area breakdown BUILT Day 13** (`/api/analytics/areas/` + a dashboard panel). See §Day 13.
+- ~~An image-upload widget — kits and products have an `image` column and no UI sets it.~~
+  ✅ **BUILT Day 13** — multipart upload for products and kits, with a preview and a table
+  thumbnail. See §Day 13.
 - ~~Personalized recommendations from purchase history.~~ ✅ **BUILT Day 2**.
-- An image-upload widget — kits and products have an `image` column and no UI sets it.
 - ~~Search relevance: `icontains` only, no fuzzy or typo tolerance.~~ ✅ **BUILT Day 12** —
   relevance-ranked, transliteration-aware, domain-aware. See §Day 12.
 
@@ -1641,12 +2538,18 @@ Ranked by probability of ruining the demo.
 | 1 | `frontend` `next build` fails (Suspense + stale cache) | **Blocker** | ✅ FIXED Day 1 |
 | 2 | Order total omits the displayed Rs. 100 delivery fee | **High** | ✅ FIXED Day 1 |
 | 3 | Admin pages show mock data on error, redirect disabled | **High** | ✅ FIXED Day 1 |
-| 4 | No demand prediction feature exists at all | **High** | ⬜ Open — Day 2 |
-| 5 | Recommendation ranking is not actually ranking (set() ordering) | **Medium** | ⬜ Open — Day 2 |
-| 6 | `is_admin_user` unenforced on the API; no VENDOR role | **Medium** | ⬜ Open — Day 3 |
+| 4 | No demand prediction feature exists at all | **High** | ✅ FIXED Day 2 |
+| 5 | Recommendation ranking is not actually ranking (set() ordering) | **Medium** | ✅ FIXED Day 2 |
+| 6 | `is_admin_user` unenforced on the API; no VENDOR role | **Medium** | ✅ FIXED Day 3 |
 | 7 | `router.push()` during render in checkout | **Medium** | ✅ FIXED Day 1 |
 | 8 | Home page masks API failure with hardcoded fallback | **Medium** | ✅ FIXED Day 1 |
 | 9 | Hardcoded admin credentials as form defaults | **Medium** | ✅ FIXED Day 1 |
+| 10 | Admin product list paginated, hiding rows from the only person who can edit them | **Medium** | ✅ FIXED Day 13 |
+| 11 | Vendor analytics double-counted an order holding two of their products | **Medium** | ✅ FIXED Day 13 |
+
+> Rows 4–6 read "Open — Day 2/3" for several days after they were fixed. That is the same
+> class of error as a stale test: a status table nobody re-reads is worse than no table, so
+> these were reconciled against the Priority section on Day 13.
 
 ---
 
@@ -1770,10 +2673,12 @@ boundary were re-verified. Authorization was **not** weakened at any point.
 | ~~Reviews and ratings~~ | ✅ **Done Day 11** — see §Day 11 |
 | ~~Password reset (B9)~~ | ✅ **Done Day 4**, sessions revoked Day 7 |
 | ~~Personalized recommendations from order history~~ | ✅ **Done Day 2** |
-| Wishlist | ⬜ Open |
-| Image upload widget (kits + products have the column, no UI) | ⬜ Open |
-| Vendor / per-area analytics | ⬜ Open |
+| ~~Wishlist~~ | ✅ **Done Day 13** — see §Day 13 |
+| ~~Image upload widget (kits + products have the column, no UI)~~ | ✅ **Done Day 13** — multipart, with preview; `FestivalKit.image` added to the write payload |
+| ~~Vendor / per-area analytics~~ | ✅ **Done Day 13** for the per-area half (vendor scoping was Day 9). See §Day 13 |
 | ~~Search relevance — `icontains` only, no fuzzy matching~~ | ✅ **Done Day 12** — see §Day 12. Remaining limits listed honestly in `docs/SEARCH.md` §7 |
+
+**Every P1 item is now closed.** The only work left is P2.
 
 ### P2
 Live payment gateways · notifications · advanced analytics · extra animation work.

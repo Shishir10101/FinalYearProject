@@ -385,3 +385,558 @@ class AddPujaToCartTests(StatusHistoryTestBase):
         UserProfile.objects.create(user=other, role=ROLE_CUSTOMER)
         self.add()
         self.assertFalse(Cart.objects.filter(user=other).exists())
+
+
+class CancellationStockTests(StatusHistoryTestBase):
+    """Cancelling an order must return its units to inventory.
+
+    This was a real, silent leak. `CheckoutView` decrements `product.stock` for every
+    line, and **nothing ever released it** — `AdminOrderUpdateView` only wrote a history
+    row. So every cancellation shrank the catalogue permanently: the goods were back on
+    the shelf but the system still counted them as gone, which then produced false
+    low-stock and restock alerts. Measured on this project's own data, the leak had
+    reached **538 units across 23 products** before it was found.
+
+    It was invisible to the whole suite because no test ever cancelled an order and then
+    looked at stock.
+    """
+
+    def _order_with(self, quantity=2):
+        OrderItem.objects.create(
+            order=self.order, product=self.product,
+            product_name=self.product.name, quantity=quantity,
+            price=self.product.price,
+        )
+        # Simulate the reservation checkout performs.
+        self.product.stock -= quantity
+        self.product.save(update_fields=['stock'])
+        return self.product.stock
+
+    def _set_status(self, new_status):
+        return self.api(self.admin).patch(
+            f'/api/orders/admin/orders/{self.order.id}/',
+            {'status': new_status}, format='json',
+        )
+
+    def test_cancelling_returns_the_units(self):
+        stock_after_checkout = self._order_with(quantity=3)
+        self.assertEqual(stock_after_checkout, 97)
+
+        response = self._set_status('cancelled')
+        self.assertEqual(response.status_code, 200, response.json())
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100,
+                         'the cancelled units were not returned to stock')
+
+    def test_cancelling_twice_does_not_restore_twice(self):
+        """Idempotency matters more than the happy path: a double restore inflates
+        inventory exactly as much as the original leak deflated it."""
+        self._order_with(quantity=3)
+        self._set_status('cancelled')
+        self._set_status('cancelled')
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100)
+
+    def test_a_status_change_that_is_not_a_cancellation_leaves_stock_alone(self):
+        self._order_with(quantity=2)
+        for status in ('confirmed', 'processing', 'shipped', 'delivered'):
+            self._set_status(status)
+            self.product.refresh_from_db()
+            self.assertEqual(self.product.stock, 98,
+                             f'{status} should not have moved stock')
+
+    def test_reinstating_a_cancelled_order_takes_the_units_back(self):
+        self._order_with(quantity=2)
+        self._set_status('cancelled')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100)
+
+        self._set_status('confirmed')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 98,
+                         'reinstating did not re-reserve the stock')
+
+    def test_reinstating_is_refused_when_the_stock_is_gone(self):
+        """Refusing beats promising a customer something the shop cannot ship."""
+        self._order_with(quantity=2)
+        self._set_status('cancelled')
+
+        # Someone else buys the last of it.
+        self.product.stock = 1
+        self.product.save(update_fields=['stock'])
+
+        response = self._set_status('confirmed')
+        self.assertEqual(response.status_code, 400, response.json())
+        self.assertIn('status', response.json())
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 1, 'a refused reinstate changed stock anyway')
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, 'cancelled',
+                         'the status moved even though the request was refused')
+
+    def test_a_refused_reinstate_does_not_partially_reserve_other_lines(self):
+        """The atomic block must roll back lines already decremented."""
+        other = Product.objects.create(
+            name='Second Line Sindoor', description='x', price=Decimal('50'),
+            stock=50, category=self.category,
+        )
+        # Two lines: one restorable, one not. If the restorable one is decremented
+        # before the other fails, stock is silently wrong.
+        OrderItem.objects.create(order=self.order, product=self.product,
+                                 product_name=self.product.name, quantity=2,
+                                 price=self.product.price)
+        OrderItem.objects.create(order=self.order, product=other,
+                                 product_name=other.name, quantity=5,
+                                 price=other.price)
+        self.product.stock -= 2
+        self.product.save(update_fields=['stock'])
+        other.stock -= 5
+        other.save(update_fields=['stock'])
+
+        self._set_status('cancelled')
+        self.product.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual((self.product.stock, other.stock), (100, 50))
+
+        other.stock = 1
+        other.save(update_fields=['stock'])
+
+        response = self._set_status('confirmed')
+        self.assertEqual(response.status_code, 400, response.json())
+
+        self.product.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(self.product.stock, 100,
+                         'the first line was decremented before the second line failed')
+        self.assertEqual(other.stock, 1)
+
+    def test_a_line_whose_product_was_deleted_does_not_break_cancellation(self):
+        """`OrderItem.product` is `SET_NULL`; a deleted product must not 500 the cancel."""
+        OrderItem.objects.create(
+            order=self.order, product=None, product_name='Deleted Thing',
+            quantity=4, price=Decimal('10'),
+        )
+        self._order_with(quantity=2)
+
+        response = self._set_status('cancelled')
+        self.assertEqual(response.status_code, 200, response.json())
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100)
+
+    def test_the_history_row_says_what_happened_to_stock(self):
+        self._order_with(quantity=3)
+        self._set_status('cancelled')
+
+        event = self.order.status_events.order_by('-id').first()
+        self.assertEqual(event.to_status, 'cancelled')
+        self.assertIn('3 unit', event.note,
+                      f'note does not explain the stock movement: {event.note!r}')
+
+    def test_a_customer_cannot_move_a_status(self):
+        """The stock movement must not open a route for a customer to mint inventory."""
+        self._order_with(quantity=2)
+        response = self.api(self.customer).patch(
+            f'/api/orders/admin/orders/{self.order.id}/',
+            {'status': 'cancelled'}, format='json',
+        )
+        self.assertEqual(response.status_code, 403)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 98, 'a customer moved stock')
+
+    def test_popularity_score_is_deliberately_not_reversed(self):
+        """`popularity_score` records demand, not settlement — it stays monotonic.
+
+        Documented as a decision rather than an oversight: the two fields are not
+        symmetric. `stock` is a factual count of what is on the shelf and must be
+        exact; `popularity_score` is a signal that a product was asked for.
+        """
+        self._order_with(quantity=2)
+        self.product.popularity_score += 2
+        self.product.save(update_fields=['popularity_score'])
+
+        self._set_status('cancelled')
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100)
+        self.assertEqual(self.product.popularity_score, 7)
+
+
+class PurgeRestockTests(StatusHistoryTestBase):
+    """`purge_verification_orders` must release the stock its orders reserved."""
+
+    def _scratch_order(self, quantity=2, status='pending'):
+        order = Order.objects.create(
+            user=self.customer, total_amount=Decimal('300'),
+            delivery_fee=Decimal('100'), shipping_address='Scratch',
+            shipping_city='kathmandu', phone='9800000000',
+            notes='Placed by verify_day13.py — safe to delete', status=status,
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, product_name=self.product.name,
+            quantity=quantity, price=self.product.price,
+        )
+        self.product.stock -= quantity
+        self.product.save(update_fields=['stock'])
+        return order
+
+    def test_purging_returns_the_reserved_stock(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        self._scratch_order(quantity=4)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 96)
+
+        call_command('purge_verification_orders', stdout=StringIO())
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100,
+                         'purging deleted the order without returning its stock')
+        self.assertFalse(Order.objects.filter(notes__icontains='verify_day13.py').exists())
+
+    def test_purging_a_cancelled_order_does_not_double_restock(self):
+        """Cancelling already released the units; deleting must not release them again."""
+        from django.core.management import call_command
+        from io import StringIO
+
+        order = self._scratch_order(quantity=4)
+        self.api(self.admin).patch(
+            f'/api/orders/admin/orders/{order.id}/', {'status': 'cancelled'}, format='json',
+        )
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100)
+
+        call_command('purge_verification_orders', stdout=StringIO())
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100, 'the units were returned twice')
+
+    def test_no_restock_flag_leaves_stock_alone(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        self._scratch_order(quantity=4)
+        call_command('purge_verification_orders', '--no-restock', stdout=StringIO())
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 96)
+
+    def test_seeded_orders_are_never_touched(self):
+        """A real order has no verifier marker, so the sweep must skip it."""
+        from django.core.management import call_command
+        from io import StringIO
+
+        real = Order.objects.create(
+            user=self.customer, total_amount=Decimal('200'),
+            delivery_fee=Decimal('100'), shipping_address='A real address',
+            shipping_city='kathmandu', phone='9800000000', notes='',
+        )
+        OrderItem.objects.create(
+            order=real, product=self.product, product_name=self.product.name,
+            quantity=1, price=self.product.price,
+        )
+
+        call_command('purge_verification_orders', stdout=StringIO())
+        self.assertTrue(Order.objects.filter(pk=real.pk).exists(),
+                        'a non-verifier order was deleted')
+
+
+class PurgePopularityTests(StatusHistoryTestBase):
+    """`purge_verification_orders` must also undo the demand signal it created.
+
+    `popularity_score` is only ever incremented, by `CheckoutView`, and cancellation
+    deliberately does not reverse it — a cancelled order still means a customer asked for
+    something. A *verification* order means nobody did, yet the field feeds the
+    recommendation engine's popularity bonus, the trending list, the default catalogue
+    ordering and the search tie-break. Left in place, fixture traffic made the demo
+    recommend whatever the test suite happened to buy: measured at **591 points across
+    23 products**, with one product at 256 against a seeded 98.
+    """
+
+    def _scratch_order(self, quantity=3, status='pending', notes=None):
+        order = Order.objects.create(
+            user=self.customer, total_amount=Decimal('300'),
+            delivery_fee=Decimal('100'), shipping_address='Scratch',
+            shipping_city='kathmandu', phone='9800000000',
+            notes=notes or 'Placed by verify_day13.py — safe to delete',
+            status=status,
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, product_name=self.product.name,
+            quantity=quantity, price=self.product.price,
+        )
+        # What checkout does to both fields.
+        self.product.stock -= quantity
+        self.product.popularity_score += quantity
+        self.product.save(update_fields=['stock', 'popularity_score'])
+        return order
+
+    def _purge(self, *args):
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+        call_command('purge_verification_orders', *args, stdout=out)
+        return out.getvalue()
+
+    def test_purging_reverses_the_popularity_it_added(self):
+        self._scratch_order(quantity=3)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.popularity_score, 8)
+
+        self._purge()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.popularity_score, 5,
+                         'the fixture demand signal was left in place')
+
+    def test_a_cancelled_fixture_order_still_has_its_popularity_reversed(self):
+        """Stock is not re-released for a cancelled order, but popularity must be.
+
+        Two fields, two rules, and the difference is deliberate: cancellation returns the
+        stock but keeps the demand signal, so the purge has to undo the signal itself.
+        """
+        order = self._scratch_order(quantity=4)
+        self.api(self.admin).patch(
+            f'/api/orders/admin/orders/{order.id}/', {'status': 'cancelled'}, format='json',
+        )
+        self.product.refresh_from_db()
+        # Cancelling returned the stock but left popularity alone.
+        self.assertEqual(self.product.stock, 100)
+        self.assertEqual(self.product.popularity_score, 9)
+
+        self._purge()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100, 'stock was returned twice')
+        self.assertEqual(self.product.popularity_score, 5,
+                         'a cancelled fixture order kept its demand signal')
+
+    def test_reversal_is_floored_at_zero(self):
+        """`popularity_score` is a PositiveIntegerField — an unguarded subtraction raises."""
+        self._scratch_order(quantity=3)
+        self.product.popularity_score = 1
+        self.product.save(update_fields=['popularity_score'])
+
+        self._purge()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.popularity_score, 0)
+
+    def test_no_restock_leaves_popularity_alone_too(self):
+        self._scratch_order(quantity=3)
+        self._purge('--no-restock')
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.popularity_score, 8)
+
+    def test_a_real_order_is_untouched(self):
+        """No verifier marker, so neither stock nor popularity may move."""
+        real = Order.objects.create(
+            user=self.customer, total_amount=Decimal('200'),
+            delivery_fee=Decimal('100'), shipping_address='A real address',
+            shipping_city='kathmandu', phone='9800000000', notes='',
+        )
+        OrderItem.objects.create(
+            order=real, product=self.product, product_name=self.product.name,
+            quantity=2, price=self.product.price,
+        )
+        self.product.stock -= 2
+        self.product.popularity_score += 2
+        self.product.save(update_fields=['stock', 'popularity_score'])
+
+        self._purge()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 98)
+        self.assertEqual(self.product.popularity_score, 7)
+
+
+class PurgeUserCascadeTests(StatusHistoryTestBase):
+    """Deleting a probe account must not leave its orders' effects in the catalogue.
+
+    `Order.user` is `CASCADE`, so `purge_verification_users` deletes a probe account's
+    orders as a side effect. That happened *after* `purge_verification_orders` had run its
+    own reversal, so those orders' reservations were never released — the third path with
+    the same flaw as cancelling an order and deleting one. Every verifier that registers
+    an account leaked stock and accumulated demand signal.
+    """
+
+    def _probe(self, username, quantity=3, status='pending'):
+        from accounts.models import UserProfile
+
+        user = User.objects.create_user(username, password='pw12345678')
+        UserProfile.objects.create(user=user, role=ROLE_CUSTOMER)
+
+        order = Order.objects.create(
+            user=user, total_amount=Decimal('300'), delivery_fee=Decimal('100'),
+            shipping_address='Probe address', shipping_city='kathmandu',
+            phone='9800000000', status=status, notes='',
+        )
+        OrderItem.objects.create(
+            order=order, product=self.product, product_name=self.product.name,
+            quantity=quantity, price=self.product.price,
+        )
+        self.product.stock -= quantity
+        self.product.popularity_score += quantity
+        self.product.save(update_fields=['stock', 'popularity_score'])
+        return user, order
+
+    def _purge_users(self, *args):
+        from django.core.management import call_command
+        from io import StringIO
+        out = StringIO()
+        call_command('purge_verification_users', *args, stdout=out)
+        return out.getvalue()
+
+    def test_deleting_a_probe_account_returns_its_orders_stock(self):
+        self._probe('verifyday13cascade')
+        self.product.refresh_from_db()
+        self.assertEqual((self.product.stock, self.product.popularity_score), (97, 8))
+
+        self._purge_users()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100,
+                         'the cascaded order left its stock reservation behind')
+        self.assertEqual(self.product.popularity_score, 5,
+                         'the cascaded order kept its demand signal')
+        self.assertFalse(User.objects.filter(username='verifyday13cascade').exists())
+
+    def test_a_cancelled_probe_order_does_not_double_release_stock(self):
+        self._probe('verifyday13cancel', quantity=4, status='cancelled')
+        # Cancelling would have released stock; simulate that having happened.
+        self.product.stock += 4
+        self.product.save(update_fields=['stock'])
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100)
+
+        self._purge_users()
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.stock, 100, 'stock was returned twice')
+        self.assertEqual(self.product.popularity_score, 5,
+                         'a cancelled probe order kept its demand signal')
+
+    def test_no_restock_leaves_the_catalogue_alone(self):
+        self._probe('verifyday13nostock')
+        self._purge_users('--no-restock')
+
+        self.product.refresh_from_db()
+        self.assertEqual((self.product.stock, self.product.popularity_score), (97, 8))
+
+    def test_protected_accounts_are_never_deleted(self):
+        """The prefix match must never reach the demo logins.
+
+        The protected accounts are **established here first**, with `get_or_create` —
+        `vendor1` already exists in a fresh test database, because the data migration
+        `products.0003_seed_areas_and_vendor` creates it. Two versions of this test were
+        wrong before this one: the first asserted that `admin` survived a purge when
+        `admin` had never been created (a precondition it did not own), and the second
+        used `create_user`, which collided with the migration's `vendor1`.
+        """
+        from accounts.models import UserProfile
+
+        for username in ('admin', 'testuser', 'vendor1'):
+            user, created = User.objects.get_or_create(username=username)
+            if created:
+                user.set_password('pw12345678')
+                user.save()
+                UserProfile.objects.create(user=user, role=ROLE_CUSTOMER)
+        self._probe('verifyday13protected')
+
+        self._purge_users()
+
+        for username in ('admin', 'testuser', 'vendor1'):
+            self.assertTrue(User.objects.filter(username=username).exists(),
+                            f'{username} was deleted by the purge')
+        self.assertFalse(User.objects.filter(username='verifyday13protected').exists())
+
+    def test_a_real_accounts_orders_are_untouched(self):
+        """A non-probe account and its order must survive, catalogue included."""
+        real = Order.objects.create(
+            user=self.customer, total_amount=Decimal('200'),
+            delivery_fee=Decimal('100'), shipping_address='A real address',
+            shipping_city='kathmandu', phone='9800000000', notes='',
+        )
+        OrderItem.objects.create(
+            order=real, product=self.product, product_name=self.product.name,
+            quantity=2, price=self.product.price,
+        )
+        self.product.stock -= 2
+        self.product.popularity_score += 2
+        self.product.save(update_fields=['stock', 'popularity_score'])
+
+        self._purge_users()
+
+        self.assertTrue(Order.objects.filter(pk=real.pk).exists())
+        self.product.refresh_from_db()
+        self.assertEqual((self.product.stock, self.product.popularity_score), (98, 7))
+
+
+class MockedPaymentDisclosureTests(StatusHistoryTestBase):
+    """A simulated gateway must say so, everywhere a customer can see it.
+
+    The demo marks an `esewa`/`khalti` order paid and confirmed without contacting
+    anything. That shortcut is fine; presenting it as a completed transaction is not,
+    and it is the same rule the forecast page already follows for synthetic data.
+
+    These tests pin the disclosure to the **single constant** that decides it, so
+    flipping `PAYMENT_METHODS_ARE_MOCKED` when a real integration lands cannot leave
+    a stale "Simulated" label behind — or a missing one.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.customer_client = self.api(self.customer)
+
+    def _checkout(self, payment_method, extra=None):
+        Cart.objects.create(user=self.customer, product=self.product, quantity=1)
+        payload = {
+            'shipping_address': 'Test Tole, Kathmandu',
+            'shipping_city': 'kathmandu',
+            'phone': '9800000000',
+            'payment_method': payment_method,
+        }
+        payload.update(extra or {})
+        return self.customer_client.post('/api/orders/checkout/', payload, format='json')
+
+    def test_the_config_lists_every_method_with_its_honesty_flag(self):
+        response = self.customer_client.get('/api/orders/config/')
+        self.assertEqual(response.status_code, 200)
+        methods = {m['value']: m for m in response.data['payment_methods']}
+        self.assertEqual(set(methods), {'cod', 'esewa', 'khalti'})
+        self.assertFalse(methods['cod']['is_mocked'])
+        self.assertTrue(methods['esewa']['is_mocked'])
+        self.assertTrue(methods['khalti']['is_mocked'])
+
+    def test_the_config_reports_that_something_is_mocked(self):
+        response = self.customer_client.get('/api/orders/config/')
+        self.assertTrue(response.data['any_payment_mocked'])
+
+    def test_a_mocked_order_is_flagged_on_the_order_itself(self):
+        order_id = self._checkout('esewa').data['id']
+        detail = self.customer_client.get(f'/api/orders/{order_id}/')
+        self.assertTrue(detail.data['payment_is_mocked'])
+
+    def test_a_cod_order_is_not_flagged_as_mocked(self):
+        """Cash on delivery is genuinely collected, so it must not carry the label."""
+        order_id = self._checkout('cod').data['id']
+        detail = self.customer_client.get(f'/api/orders/{order_id}/')
+        self.assertFalse(detail.data['payment_is_mocked'])
+
+    def test_the_status_history_records_that_no_money_moved(self):
+        """The timeline is the audit trail — it must not read as a real payment."""
+        order_id = self._checkout('esewa').data['id']
+        note = OrderStatusEvent.objects.get(
+            order_id=order_id, to_status='confirmed',
+        ).note
+        self.assertIn('simulated', note.lower())
+        self.assertIn('no money', note.lower())
+
+    def test_the_customer_cannot_forge_the_flag(self):
+        """`payment_is_mocked` is derived, never accepted from the client."""
+        response = self._checkout('esewa', extra={'payment_is_mocked': False})
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data['payment_is_mocked'])

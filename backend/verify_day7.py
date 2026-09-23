@@ -206,6 +206,15 @@ def test_password_reset_revokes():
         'uid': uid, 'token': token,
         'new_password': PROBE_NEW_PASSWORD, 'new_password2': PROBE_NEW_PASSWORD,
     })
+    # Guarded as well as the request above, because they are **separately** throttled
+    # and it is the confirm that usually runs out first in a sweep. Without this the
+    # 429 landed on the next line as `the reset succeeds -> status=429`, and the four
+    # checks after it cascaded — five failures reported for a throttle doing its job,
+    # which is precisely what this module's `skip()` exists to prevent.
+    if throttled(status, confirm):
+        skip('the reset confirmation round trip',
+             'rate limited on the confirm endpoint (10/min per IP, shared across verifiers)')
+        return
     check('the reset succeeds', status == 200, f'status={status}')
     check('the response says other sessions were ended',
           isinstance(confirm, dict) and 'session' in confirm.get('message', '').lower(),

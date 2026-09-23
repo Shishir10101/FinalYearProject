@@ -485,9 +485,26 @@ check('customer gets 403 on admin products', status == 403, f'got {status}')
 
 status, vprod = request('GET', '/api/products/admin/products/', token=vendor_tok)
 check('vendor can list own products', status == 200, f'got {status}')
-check('vendor scope is 12 of 35',
-      isinstance(vprod, dict) and vprod.get('count') == 12,
-      f"count={vprod.get('count') if isinstance(vprod, dict) else None}")
+
+# Asserted on **ownership**, not on a row count.
+#
+# This check used to read `vprod['count'] == 12`, which was the pagination artifact:
+# the admin product list was paginated at 12, and vendor1 happens to own exactly 12
+# products, so "12" was simultaneously the right answer and a first page that could
+# not be distinguished from one. When the list was unpaginated on Day 13 the check
+# failed while the behaviour was *more* correct.
+#
+# The real invariant is that every row returned belongs to this vendor and none of
+# the 23 unowned catalogue items leak in — which is what the endpoint's docstring
+# promises, and what holds whatever the catalogue size becomes.
+vrows = vprod if isinstance(vprod, list) else (vprod.get('results') if isinstance(vprod, dict) else [])
+vendor_ids = {r.get('vendor') for r in vrows}
+check('the vendor product list is scoped to that vendor alone',
+      bool(vrows) and vendor_ids == {vrows[0].get('vendor')},
+      f'{len(vrows)} rows, distinct vendor ids={sorted(str(v) for v in vendor_ids)}')
+check('no unowned catalogue item leaks into a vendor list',
+      all(r.get('vendor') is not None for r in vrows),
+      f'{sum(1 for r in vrows if r.get("vendor") is None)} unowned rows')
 
 status, _ = request('GET', '/api/products/admin/vendors/', token=vendor_tok)
 check('vendor can still reach the vendor list (scoped to self)',
