@@ -1,0 +1,276 @@
+/* ReviewsSection — ratings and reviews for one product.
+ *
+ * Only what this component owns. Buttons, badges, fields, notices, skeletons and the
+ * empty state all come from globals.css, which is why this file is short.
+ */
+
+.wrap {
+  margin-top: 3.5rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border, #eee);
+}
+
+/* --- stars --------------------------------------------------------------- */
+
+.stars {
+  display: inline-flex;
+  gap: 1px;
+  line-height: 1;
+  font-size: 0.95rem;
+}
+
+.starsLg {
+  font-size: 1.35rem;
+}
+
+.starOn {
+  color: var(--secondary, #D4A843);
+}
+
+.starOff {
+  color: #d8d8d8;
+}
+
+/* --- summary ------------------------------------------------------------- */
+
+.summaryCard {
+  display: grid;
+  grid-template-columns: minmax(150px, auto) minmax(200px, 1fr) auto;
+  gap: 28px;
+  align-items: center;
+  padding: 20px 22px;
+  margin-top: 1.25rem;
+  background: var(--bg-secondary, #FFF1E6);
+  border-radius: var(--radius-md, 10px);
+}
+
+.summaryScore {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.scoreNumber {
+  font-family: var(--font-heading, 'Outfit'), sans-serif;
+  font-size: 2.6rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary, #1A1A2E);
+}
+
+.scoreCount {
+  font-size: 0.85rem;
+  color: var(--text-secondary, #4A4A6A);
+}
+
+.distribution {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 200px;
+}
+
+.distRow {
+  display: grid;
+  grid-template-columns: 34px 1fr 30px;
+  gap: 8px;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--text-secondary, #4A4A6A);
+}
+
+.distLabel {
+  white-space: nowrap;
+}
+
+.distTrack {
+  display: block;
+  height: 8px;
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.distFill {
+  display: block;
+  height: 100%;
+  background: var(--secondary, #D4A843);
+  border-radius: 999px;
+  /* Width is the datum here; animating it would make the chart harder to read. */
+  transition: none;
+}
+
+.distCount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.summaryAction {
+  justify-self: end;
+}
+
+/* --- the form ------------------------------------------------------------ */
+
+.form {
+  margin-top: 1.5rem;
+  padding: 20px 22px;
+  border: 1px solid var(--border, #eee);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-card, #fff);
+}
+
+.formTitle {
+  margin: 0 0 16px;
+  font-size: 1.1rem;
+}
+
+.ratingPicker {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.starBtnOn,
+.starBtnOff {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-size: 1.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.starBtnOn {
+  color: var(--secondary, #D4A843);
+}
+
+.starBtnOff {
+  color: #d8d8d8;
+}
+
+.starBtnOn:hover,
+.starBtnOff:hover {
+  color: var(--secondary, #D4A843);
+}
+
+.starBtnOn:focus-visible,
+.starBtnOff:focus-visible {
+  outline: 2px solid var(--primary, #C41E3A);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.ratingWord {
+  margin-left: 10px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary, #4A4A6A);
+}
+
+.formActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* --- your own review ----------------------------------------------------- */
+
+.mineCard {
+  margin-top: 1.5rem;
+  padding: 16px 18px;
+  border-left: 3px solid var(--primary, #C41E3A);
+  background: var(--bg-card, #fff);
+  border-radius: var(--radius-sm, 6px);
+}
+
+.mineHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+/* --- the list ------------------------------------------------------------ */
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.review {
+  padding: 16px 18px;
+  border: 1px solid var(--border, #eee);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-card, #fff);
+}
+
+.reviewHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.author {
+  font-size: 0.95rem;
+  color: var(--text-primary, #1A1A2E);
+}
+
+.verified {
+  margin-left: 8px;
+  font-size: 0.7rem;
+}
+
+.reviewDate {
+  font-size: 0.8rem;
+  color: var(--text-muted, #8A8AAA);
+}
+
+.reviewTitle {
+  margin: 8px 0 4px;
+  font-weight: 600;
+  color: var(--text-primary, #1A1A2E);
+}
+
+.reviewBody {
+  margin: 4px 0 0;
+  line-height: 1.6;
+  color: var(--text-secondary, #4A4A6A);
+}
+
+.moreRow {
+  margin-top: 1.25rem;
+  text-align: center;
+}
+
+/* --- responsive ---------------------------------------------------------- */
+
+@media (max-width: 720px) {
+  .summaryCard {
+    grid-template-columns: 1fr;
+    gap: 18px;
+    text-align: center;
+  }
+
+  .summaryAction {
+    justify-self: stretch;
+  }
+
+  .summaryAction > * {
+    width: 100%;
+  }
+
+  .distribution {
+    min-width: 0;
+  }
+}

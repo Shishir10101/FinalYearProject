@@ -1,0 +1,315 @@
+/* Shop-by-ritual: list and detail pages. */
+
+.hero {
+  text-align: center;
+  max-width: 720px;
+  margin: 0 auto var(--space-3xl);
+}
+
+.tagline {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--secondary-dark);
+  margin-bottom: var(--space-sm);
+}
+
+.title {
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  color: var(--text-primary);
+  margin-bottom: var(--space-md);
+  line-height: 1.15;
+}
+
+.subtitle {
+  color: var(--text-secondary);
+  font-size: 1.02rem;
+  line-height: 1.6;
+}
+
+/* --- list card ---------------------------------------------------------- */
+
+.card {
+  padding: var(--space-xl);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: var(--space-md);
+  min-height: 24px;
+}
+
+.kitTag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--success);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 2px 7px;
+}
+
+.card h3 {
+  font-size: 1.3rem;
+  color: var(--text-primary);
+  margin-bottom: var(--space-sm);
+}
+
+.desc {
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  /* Keeps every card the same height regardless of description length. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-bottom: var(--space-lg);
+}
+
+.cardFoot {
+  margin-top: auto;
+  padding-top: var(--space-md);
+  border-top: 1px dashed var(--bg-secondary);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.count {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.link {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--secondary-dark);
+}
+
+/* --- detail ------------------------------------------------------------- */
+
+.detailHeader {
+  max-width: 720px;
+  margin-bottom: var(--space-2xl);
+}
+
+.backLink {
+  display: inline-block;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: var(--space-md);
+}
+
+.backLink:hover {
+  color: var(--primary);
+}
+
+.detailTitle {
+  font-size: clamp(1.7rem, 3.6vw, 2.3rem);
+  color: var(--text-primary);
+  margin-bottom: var(--space-sm);
+  line-height: 1.15;
+}
+
+.detailMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.detailDesc {
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: var(--space-2xl);
+  align-items: start;
+}
+
+.itemList {
+  list-style: none;
+  margin: 0 0 var(--space-2xl);
+  padding: 0;
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+}
+
+.item + .item {
+  border-top: 1px solid var(--bg-secondary);
+}
+
+.itemName {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.itemName:hover {
+  color: var(--primary);
+}
+
+.itemQty {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.itemPrice {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.optionalRow {
+  opacity: 0.85;
+}
+
+.sectionHeading {
+  font-size: 1.15rem;
+  color: var(--text-primary);
+  margin-bottom: var(--space-sm);
+}
+
+.sectionNote {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: var(--space-lg);
+}
+
+/* --- sidebar ------------------------------------------------------------ */
+
+.side {
+  position: sticky;
+  top: 90px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
+}
+
+.panel {
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-xl);
+}
+
+.panelTitle {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--secondary-dark);
+  margin-bottom: var(--space-md);
+}
+
+.totalRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: var(--space-lg);
+  padding-bottom: var(--space-md);
+  border-bottom: 1px dashed var(--bg-secondary);
+}
+
+.totalLabel {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.totalValue {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.panelNote {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-top: var(--space-md);
+}
+
+.kitPanel {
+  background: rgba(212, 168, 67, 0.1);
+  border: 1px solid rgba(212, 168, 67, 0.35);
+  border-radius: var(--radius-lg);
+  padding: var(--space-xl);
+}
+
+.kitPanelName {
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.kitPanelNote {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-md);
+  line-height: 1.5;
+}
+
+.stateBlock {
+  background: white;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3xl);
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+.stateBlock span {
+  font-size: 3.5rem;
+  display: block;
+  margin-bottom: var(--space-md);
+  opacity: 0.8;
+}
+
+.stateBlock h3 {
+  color: var(--text-primary);
+  margin-bottom: var(--space-sm);
+}
+
+.stateBlock p {
+  color: var(--text-muted);
+  max-width: 46ch;
+  margin: 0 auto;
+}
+
+@media (max-width: 880px) {
+  .columns {
+    grid-template-columns: 1fr;
+    gap: var(--space-xl);
+  }
+
+  .side {
+    position: static;
+  }
+}

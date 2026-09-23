@@ -1,7 +1,9 @@
-# The two Next.js frontends are independent git repositories with their own history.
-# They are excluded here so this repo never records them as gitlinks/submodules.
-frontend/
-admin-dashboard/
+# The two Next.js frontends were independent git repositories with their own
+# history, and were excluded here so this repo never recorded them as
+# gitlinks/submodules. They are now part of this single repository: the nested
+# .git directories were removed (the standalone histories are archived outside
+# the repo) so the files commit as ordinary files rather than as submodules.
+# Their own .gitignore files still apply to their subtrees.
 
 # Assistant project data (memory, session state) — not part of the deliverable
 .workbuddy-ai/

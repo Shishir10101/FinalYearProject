@@ -1,0 +1,192 @@
+/* Shared product card.
+ *
+ * Before this existed, home / products / recommendations each had their own
+ * markup for the same card and they had drifted: the home page showed no unit,
+ * used a different category class, and its "+" button was decorative — it looked
+ * clickable and did nothing. One component means one behaviour and one look.
+ */
+
+.productCard {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.productImage {
+  aspect-ratio: 1;
+  background: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.productImage img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.5s ease;
+}
+
+.productCard:hover .productImage img {
+  transform: scale(1.05);
+}
+
+.placeholderImg {
+  font-size: 4rem;
+  opacity: 0.5;
+}
+
+.outOfStock {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--danger);
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(4px);
+}
+
+/* Festival-urgency badge, e.g. "In 3 days". Sits opposite the stock badge so a
+   product can carry both without overlapping. */
+.urgencyBadge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: var(--primary);
+  color: var(--text-light);
+  padding: 4px 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+}
+
+.productInfo {
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+}
+
+.categoryBadge {
+  font-size: 0.75rem;
+  color: var(--secondary-dark);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.productInfo h4 {
+  font-size: 1.1rem;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.unitText {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-bottom: auto;
+}
+
+/* "Why this product" callout. Text comes from the backend ranker's reason list
+   (see backend/festivals/recommender.py) and is never invented on the client. */
+.reasonBox {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  background: rgba(212, 168, 67, 0.12);
+  border-left: 3px solid var(--secondary);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-top: var(--space-sm);
+}
+
+.reasonIcon {
+  font-size: 0.85rem;
+  line-height: 1.3;
+}
+
+.reasonText {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+
+.productFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-md);
+  border-top: 1px dashed var(--bg-secondary);
+  padding-top: var(--space-md);
+}
+
+.price {
+  font-weight: 700;
+  font-size: 1.25rem;
+  color: var(--primary);
+}
+
+/* Save-for-later heart.
+ *
+ * Anchored to the bottom-right of the image, which is the only corner of this card
+ * not already claimed: the urgency badge owns top-left and the out-of-stock badge
+ * owns top-right. Placing it anywhere else would make a product that is both
+ * featured and out of stock overlap one of them.
+ *
+ * It is a real <button> inside a <Link>, so it must call preventDefault and
+ * stopPropagation — otherwise pressing it also navigates to the product page. */
+.wishBtn {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 1.05rem;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--text-muted);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(4px);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.wishBtn:hover:not(:disabled) {
+  transform: scale(1.1);
+  background: #fff;
+}
+
+/* Saved state. Colour alone is not enough — the glyph itself changes to a filled
+   heart, so the state survives a greyscale screen and a colour-blind reader. */
+.wishBtnSaved {
+  color: var(--danger);
+}
+
+.wishBtn:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+/* Rendered while the wishlist is still being fetched. Neutral and non-interactive:
+   showing the un-saved state here would tell a customer their saved item is not
+   saved, which is the exact lie `wishlistLoaded` exists to prevent. */
+.wishBtnPending {
+  visibility: hidden;
+}

@@ -1,0 +1,518 @@
+.home {
+  overflow-x: hidden;
+}
+
+.hero {
+  position: relative;
+  min-height: 80vh;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  background-image: url('/images/hero.png');
+  background-size: cover;
+  background-position: center;
+  padding: var(--space-3xl) 0;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, rgba(26,26,46,0.95) 0%, rgba(26,26,46,0.7) 50%, rgba(26,26,46,0.2) 100%);
+  z-index: 1;
+}
+
+.heroContent {
+  position: relative;
+  z-index: 10;
+  max-width: 650px;
+}
+
+.heroContent h1 {
+  font-size: 4.2rem;
+  margin-bottom: var(--space-lg);
+  color: white;
+  text-shadow: 0 4px 15px rgba(0,0,0,0.5);
+  line-height: 1.1;
+}
+
+.highlight {
+  color: var(--secondary-light);
+  position: relative;
+}
+
+.highlight::after {
+  content: '';
+  position: absolute;
+  bottom: 5px;
+  left: 0;
+  width: 100%;
+  height: 12px;
+  background: var(--primary);
+  opacity: 0.6;
+  z-index: -1;
+}
+
+.heroContent p {
+  font-size: 1.25rem;
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  margin-bottom: var(--space-xl);
+  line-height: 1.8;
+}
+
+.heroActions {
+  display: flex;
+  gap: var(--space-md);
+  margin-bottom: var(--space-2xl);
+}
+
+.features {
+  display: flex;
+  gap: var(--space-xl);
+  border-top: 1px solid rgba(0,0,0,0.1);
+  padding-top: var(--space-lg);
+}
+
+.feature {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.feature span {
+  font-size: 1.5rem;
+}
+
+.sectionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: var(--space-2xl);
+}
+
+/* Festival Cards */
+.festivalCard {
+  padding: var(--space-xl);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.festivalDate {
+  display: inline-block;
+  padding: 6px 12px;
+  background: rgba(196, 30, 58, 0.1);
+  color: var(--primary);
+  font-weight: 700;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  margin-bottom: var(--space-md);
+  align-self: flex-start;
+}
+
+.festivalCard h3 {
+  font-size: 1.4rem;
+  margin-bottom: var(--space-sm);
+  color: var(--text-primary);
+}
+
+.festivalCard p {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  margin-bottom: var(--space-lg);
+  flex-grow: 1;
+}
+
+.linkText {
+  color: var(--secondary-dark);
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+/* Product cards now come from components/ProductCard, so the home page, the
+   catalogue and the recommendations grid render one identical card. The styles
+   that used to live here had drifted from the other two. */
+
+/* --- Next-festival spotlight ------------------------------------------- */
+
+.spotlight {
+  background: var(--bg-secondary);
+}
+
+.spotlightInner {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: var(--space-2xl);
+  align-items: start;
+}
+
+.spotlightMain {
+  min-width: 0;
+}
+
+.spotlightEyebrow {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--primary);
+  margin-bottom: 6px;
+}
+
+.spotlightTitle {
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  color: var(--text-primary);
+  margin-bottom: 6px;
+  line-height: 1.15;
+}
+
+.spotlightMeta {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  margin-bottom: var(--space-md);
+}
+
+.spotlightMeta strong {
+  color: var(--primary);
+}
+
+.spotlightDesc {
+  color: var(--text-secondary);
+  max-width: 60ch;
+  margin-bottom: var(--space-xl);
+}
+
+.kitBox {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-lg);
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-lg) var(--space-xl);
+}
+
+.kitBox strong {
+  font-size: 1.05rem;
+  color: var(--text-primary);
+}
+
+.kitMeta {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 2px 0 0;
+}
+
+.kitPrice {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.kitPriceNow {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.kitPriceWas {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+/* Shown when the next festival has no ready-made kit. Says so plainly rather
+   than leaving an empty slot. */
+.noKit {
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-lg) var(--space-xl);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-lg);
+}
+
+.noKit p {
+  margin: 0;
+  color: var(--text-secondary);
+  flex: 1 1 240px;
+}
+
+/* --- Required samagri panel -------------------------------------------- */
+
+.requiredPanel {
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: var(--space-lg);
+}
+
+.requiredHeading {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--secondary-dark);
+  margin-bottom: 4px;
+}
+
+/* Names the festival this list belongs to — needed because when the nearest
+   festival is kitless, the list is drawn from a later one. */
+.requiredFor {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-md);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--bg-secondary);
+}
+
+.requiredCta {
+  display: inline-block;
+  margin-top: var(--space-md);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--secondary-dark);
+}
+
+.requiredCta:hover {
+  color: var(--primary);
+}
+
+.requiredList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.requiredList li + li {
+  border-top: 1px dashed var(--bg-secondary);
+}
+
+.requiredList a {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-md);
+  padding: 9px 0;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  transition: color var(--transition-fast);
+}
+
+.requiredList a:hover {
+  color: var(--primary);
+}
+
+.requiredPrice {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.requiredMore {
+  margin: var(--space-md) 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* --- Shop-by-ritual card ------------------------------------------------ */
+
+.ritualCard {
+  padding: var(--space-xl);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ritualKitTag {
+  align-self: flex-start;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--success);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: 2px 7px;
+  margin-bottom: 6px;
+}
+
+.ritualCard h3 {
+  font-size: 1.2rem;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.ritualCount {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0 0 var(--space-md);
+}
+
+/* --- Festival calendar card -------------------------------------------- */
+
+.festivalWhen {
+  font-size: 0.85rem;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* `.festivalCard p` above sets the body colour, so this needs the extra
+   specificity to win on the date line. */
+.festivalCard .festivalWhen {
+  color: var(--primary);
+}
+
+/* Provenance line for the recommendation engine. States the algorithm and
+   whether the ranking used order history, so the ranking is not a black box. */
+.modelNote {
+  margin-top: var(--space-lg);
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.6);
+  max-width: 60ch;
+}
+
+@media (max-width: 880px) {
+  .spotlightInner {
+    grid-template-columns: 1fr;
+    gap: var(--space-xl);
+  }
+}
+
+/* Benefits Section */
+.benefitsList {
+  list-style: none;
+  margin-top: var(--space-xl);
+}
+
+.benefitsList li {
+  margin-bottom: var(--space-md);
+  color: rgba(255,255,255,0.8);
+  font-size: 1.05rem;
+}
+
+.benefitsList strong {
+  color: white;
+}
+
+.mandalaArt {
+  position: relative;
+  height: 400px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mandalaCircle1, .mandalaCircle2 {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px dashed rgba(212, 168, 67, 0.3);
+  animation: spin 30s linear infinite;
+  /* These are two 400px circles with a *dashed* border rotating forever in the
+     hero. A dashed border on a circle is not cheap to rasterize, and without
+     promotion the browser re-rasterizes it every frame — on the main thread,
+     which is what made the landing page scroll feel gritty. `will-change`
+     lifts each one onto its own compositor layer, so the rotation costs the
+     compositor a matrix multiply instead of the main thread a repaint. */
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+.mandalaCircle1 {
+  width: 100%;
+  height: 100%;
+}
+
+.mandalaCircle2 {
+  width: 70%;
+  height: 70%;
+  border-style: dotted;
+  animation-direction: reverse;
+}
+
+.mandalaIcon {
+  font-size: 5rem;
+  color: var(--secondary);
+  text-shadow: 0 0 30px rgba(212, 168, 67, 0.5);
+}
+
+@keyframes spin {
+  100% { transform: rotate(360deg); }
+}
+
+@media (max-width: 768px) {
+  .heroContent h1 {
+    font-size: 2.8rem;
+  }
+  .sectionHeader {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-md);
+  }
+  .features {
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+}
+
+/* ===================== Empty / Error states ===================== */
+
+.emptyState,
+.errorState {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--space-3xl) var(--space-lg);
+  border-radius: var(--radius-lg);
+}
+
+.emptyState {
+  background: var(--bg-card);
+  border: 1px dashed rgba(0, 0, 0, 0.12);
+}
+
+.errorState {
+  background: var(--danger-light);
+  border: 1px solid rgba(220, 53, 69, 0.25);
+}
+
+.emptyState span,
+.errorState span {
+  font-size: 2.75rem;
+  line-height: 1;
+  margin-bottom: var(--space-md);
+}
+
+.emptyState h3,
+.errorState h3 {
+  font-size: 1.25rem;
+  margin-bottom: var(--space-xs);
+  color: var(--text-primary);
+}
+
+.emptyState p,
+.errorState p {
+  color: var(--text-secondary);
+  max-width: 42ch;
+}
+
+.errorState h3 {
+  color: var(--danger);
+}

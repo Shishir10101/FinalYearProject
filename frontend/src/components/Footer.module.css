@@ -1,0 +1,130 @@
+.footer {
+  background: var(--bg-dark);
+  color: var(--text-light);
+  position: relative;
+  overflow: hidden;
+}
+
+.mandalaTop {
+  height: 4px;
+  background: linear-gradient(90deg, var(--primary), var(--secondary), var(--accent), var(--secondary), var(--primary));
+}
+
+.container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 1.5rem;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+
+.col h4 {
+  font-family: var(--font-heading);
+  font-size: 1rem;
+  margin-bottom: 1rem;
+  color: var(--secondary);
+}
+
+.col a {
+  display: block;
+  color: rgba(255,255,255,0.7);
+  text-decoration: none;
+  padding: 4px 0;
+  font-size: 0.9rem;
+  transition: color var(--transition-fast);
+}
+
+.col a:hover {
+  color: var(--secondary-light);
+  padding-left: 4px;
+}
+
+.col p {
+  color: rgba(255,255,255,0.7);
+  font-size: 0.9rem;
+  margin-bottom: 6px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 1rem;
+}
+
+.brand h3 {
+  font-family: var(--font-heading);
+  font-size: 1.3rem;
+  color: white;
+}
+
+.brandIcon {
+  font-size: 1.8rem;
+}
+
+.desc {
+  color: rgba(255,255,255,0.6) !important;
+  line-height: 1.7;
+  margin-bottom: 1rem !important;
+}
+
+.cities {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cities span {
+  font-size: 0.8rem;
+  color: rgba(255,255,255,0.5);
+}
+
+.social {
+  display: flex;
+  gap: 12px;
+  margin-top: 0.5rem;
+  font-size: 1.3rem;
+}
+
+.social span {
+  cursor: pointer;
+  transition: transform var(--transition-fast);
+}
+
+.social span:hover {
+  transform: scale(1.2);
+}
+
+.bottom {
+  border-top: 1px solid rgba(255,255,255,0.1);
+  padding-top: 1.5rem;
+  text-align: center;
+}
+
+.bottom p {
+  color: rgba(255,255,255,0.5);
+  font-size: 0.85rem;
+}
+
+.tagline {
+  margin-top: 8px;
+  font-size: 0.9rem !important;
+  color: var(--secondary) !important;
+}
+
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}

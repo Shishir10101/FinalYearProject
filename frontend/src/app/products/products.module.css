@@ -1,0 +1,190 @@
+.header {
+  margin-bottom: var(--space-2xl);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: var(--space-2xl);
+  align-items: start;
+}
+
+/* Sidebar */
+.sidebar {
+  position: sticky;
+  top: 90px;
+  background: var(--bg-card);
+  padding: var(--space-lg);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.filterGroup {
+  margin-bottom: var(--space-xl);
+}
+
+.filterGroup:last-child {
+  margin-bottom: 0;
+}
+
+.filterTitle {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: var(--space-md);
+  color: var(--text-primary);
+  border-bottom: 2px solid var(--bg-secondary);
+  padding-bottom: 8px;
+}
+
+.searchBox {
+  position: relative;
+  display: flex;
+}
+
+.searchBtn {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.categoryList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.catBtn {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  transition: all var(--transition-fast);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.catBtn:hover {
+  background: var(--bg-secondary);
+  color: var(--primary);
+}
+
+.catActive {
+  background: rgba(196, 30, 58, 0.1);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.catCount {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+.catActive .catCount {
+  background: white;
+  color: var(--primary);
+}
+
+/* Product Card (similar to home but adapted) */
+/* The product card itself (image, badges, info, price, add button) lives in
+   components/ProductCard.module.css so the catalogue, the home page and the
+   recommendations page render one identical card. */
+
+.emptyState {
+  background: white;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3xl);
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+.emptyIcon {
+  font-size: 4rem;
+  opacity: 0.3;
+  display: block;
+  margin-bottom: var(--space-md);
+}
+
+.emptyState h3 {
+  font-size: 1.5rem;
+  margin-bottom: var(--space-sm);
+}
+
+.emptyState p {
+  color: var(--text-secondary);
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: static;
+  }
+}
+
+/* --- Search: what the query was understood to mean ------------------------ */
+
+/*
+ * The panel above the results. A shopper who typed "pasni" is being shown samagri
+ * that never mentions the word, and "sindur" is being answered with a product filed
+ * under "Sindoor" — both need saying out loud, or the results look arbitrary.
+ */
+.searchInsight {
+  background: var(--bg-secondary);
+  border: 1px solid var(--secondary-light);
+  border-radius: var(--radius-md);
+  padding: var(--space-md) var(--space-lg);
+  margin-bottom: var(--space-lg);
+}
+
+.insightLine {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.insightLine + .insightLine {
+  margin-top: var(--space-xs);
+}
+
+.insightKind {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.suggestionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  justify-content: center;
+  margin-top: var(--space-md);
+}
+
+/* --- Paging --------------------------------------------------------------- */
+
+/*
+ * The catalogue used to fetch page 1 and render it as though it were the whole
+ * catalogue: 12 of 35 products, with nothing on screen to say so. Same trap as the
+ * dashboard's item editor, so the same fix — walk the pages and say how many are
+ * left.
+ */
+.moreRow {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--space-xl);
+}

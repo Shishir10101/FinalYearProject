@@ -1,0 +1,307 @@
+.header {
+  text-align: center;
+  max-width: 800px;
+  margin: 0 auto var(--space-3xl);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: var(--space-xl);
+}
+
+.tabBtn {
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: white;
+  border: 1px solid var(--text-muted);
+  color: var(--text-secondary);
+  font-weight: 500;
+  transition: all var(--transition-fast);
+}
+
+.tabBtn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.activeTab {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: white;
+}
+
+.activeTab:hover {
+  color: white;
+}
+
+.kitCard {
+  display: flex;
+  flex-direction: column;
+  border-top: 4px solid var(--secondary);
+}
+
+.kitHeader {
+  padding: var(--space-lg) var(--space-lg) 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.discountBadge {
+  background: var(--danger);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.kitBody {
+  padding: var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  flex-grow: 1;
+}
+
+.kitBody h3 {
+  font-size: 1.4rem;
+  margin-bottom: var(--space-sm);
+  color: var(--text-primary);
+}
+
+.kitDesc {
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.6;
+  margin-bottom: var(--space-lg);
+  flex-grow: 1;
+}
+
+.kitStats {
+  margin-bottom: var(--space-lg);
+  padding: 10px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.priceRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px dashed rgba(0,0,0,0.1);
+  padding-top: var(--space-md);
+}
+
+.priceCol {
+  display: flex;
+  flex-direction: column;
+}
+
+.originalPrice {
+  text-decoration: line-through;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.price {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+/* Modal */
+.modalOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: var(--space-lg);
+}
+
+.modalContent {
+  background: white;
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 700px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  box-shadow: var(--shadow-xl);
+  animation: fadeInUp 0.3s ease;
+}
+
+.closeBtn {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+  transition: all var(--transition-fast);
+  z-index: 10;
+}
+
+.closeBtn:hover {
+  background: var(--danger);
+  color: white;
+}
+
+.modalHeader {
+  padding: var(--space-xl);
+  border-bottom: 2px solid var(--bg-secondary);
+}
+
+.modalHeader h2 {
+  font-size: 1.8rem;
+  margin: var(--space-md) 0;
+}
+
+.modalHeader p {
+  color: var(--text-secondary);
+  font-size: 1.05rem;
+}
+
+.modalBody {
+  padding: var(--space-xl);
+  overflow-y: auto;
+  flex-grow: 1;
+}
+
+.modalBody h3 {
+  margin-bottom: var(--space-md);
+  color: var(--text-primary);
+}
+
+.itemList {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.itemRow {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.itemImg {
+  width: 50px;
+  height: 50px;
+  border-radius: var(--radius-sm);
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.itemImg img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.itemInfo {
+  flex-grow: 1;
+}
+
+.itemInfo h4 {
+  font-size: 1rem;
+  margin-bottom: 4px;
+}
+
+.itemInfo span {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.modalFooter {
+  padding: var(--space-xl);
+  border-top: 2px solid var(--bg-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--bg-primary);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.modalPrice {
+  display: flex;
+  flex-direction: column;
+}
+
+.modalPrice span {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.modalPrice strong {
+  font-size: 1.8rem;
+  color: var(--primary);
+  line-height: 1.2;
+}
+
+.modalPrice small {
+  color: var(--success);
+  font-weight: 600;
+}
+
+.emptyState {
+  background: white;
+  border-radius: var(--radius-lg);
+  padding: var(--space-3xl);
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+
+.emptyIcon {
+  font-size: 4rem;
+  opacity: 0.8;
+  display: block;
+  margin-bottom: var(--space-md);
+}
+
+/* Recovery actions on the empty state. An empty result reached from a filtered
+   link must offer a way out rather than leaving the shopper stuck. */
+.emptyActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  justify-content: center;
+  margin-top: var(--space-lg);
+}
+
+@media (max-width: 600px) {
+  .modalFooter {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-md);
+  }
+  .modalPrice {
+    text-align: center;
+  }
+}

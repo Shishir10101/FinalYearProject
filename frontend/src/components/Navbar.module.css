@@ -1,0 +1,266 @@
+.navbar {
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+  /* Opaque, deliberately. This bar used to be
+     `background: rgba(255,248,240,0.92); backdrop-filter: blur(12px);`
+     and that single line was the cause of the storefront's scroll jank: a
+     `backdrop-filter` on a *sticky* element forces the compositor to
+     re-sample and re-blur everything scrolling underneath it on every
+     frame, on the main thread. The bar is 70px tall and full width, so it
+     was the most expensive thing on every page. An opaque background costs
+     nothing and is visually indistinguishable at 92% alpha over a cream
+     page. Do not reintroduce a blur here. */
+  background: var(--bg-primary);
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  padding: 0;
+}
+
+.container {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 70px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--text-primary);
+}
+
+.logoIcon {
+  font-size: 2rem;
+  /* Was `animation: pulse 2s infinite`. An infinite `transform: scale()`
+     inside a sticky, always-visible bar keeps the element on its own
+     compositing layer and repaints it forever — for a decoration nobody
+     reads as motion. Static is fine. */
+}
+
+.logoText {
+  font-family: var(--font-heading);
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--primary);
+  display: block;
+  line-height: 1.1;
+}
+
+.logoSub {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.navLinks {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.navLink {
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+}
+
+.navLink:hover {
+  color: var(--primary);
+  background: rgba(196, 30, 58, 0.06);
+}
+
+.navActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cartBtn {
+  position: relative;
+  font-size: 1.4rem;
+  padding: 8px;
+  text-decoration: none;
+  transition: transform var(--transition-fast);
+}
+
+.cartBtn:hover {
+  transform: scale(1.1);
+}
+
+.cartBadge {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  background: var(--primary);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 700;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Wishlist heart, beside the cart. Same treatment as `.cartBtn` on purpose — the
+   two are peer "my stuff" affordances and should not look like different species.
+   Kept as its own class rather than reusing `.cartBtn` so the two can diverge
+   without one silently dragging the other along. */
+.wishBtn {
+  position: relative;
+  font-size: 1.4rem;
+  padding: 8px;
+  text-decoration: none;
+  transition: transform var(--transition-fast);
+}
+
+.wishBtn:hover {
+  transform: scale(1.1);
+}
+
+.wishBadge {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  background: var(--danger);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 700;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profileWrapper {
+  position: relative;
+}
+
+.profileBtn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), var(--accent));
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  transition: box-shadow var(--transition-fast);
+}
+
+.avatar:hover {
+  box-shadow: 0 0 0 3px rgba(196, 30, 58, 0.2);
+}
+
+.dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  min-width: 220px;
+  overflow: hidden;
+  animation: fadeInUp 0.2s ease;
+  z-index: 100;
+}
+
+.dropdownHeader {
+  padding: 16px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+
+.dropdownHeader strong {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.dropdownHeader small {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.dropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: background var(--transition-fast);
+  background: none;
+  border: none;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+
+.dropdownItem:hover {
+  background: var(--bg-secondary);
+  color: var(--primary);
+}
+
+.hamburger {
+  display: none;
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+@media (max-width: 768px) {
+  .hamburger {
+    display: block;
+  }
+
+  .navLinks {
+    position: fixed;
+    top: 70px;
+    left: 0;
+    right: 0;
+    background: white;
+    flex-direction: column;
+    padding: 20px;
+    box-shadow: var(--shadow-lg);
+    transform: translateY(-120%);
+    transition: transform var(--transition-normal);
+    z-index: 999;
+  }
+
+  .navLinksOpen {
+    transform: translateY(0);
+  }
+
+  .navLink {
+    width: 100%;
+    padding: 14px 16px;
+    font-size: 1rem;
+  }
+}

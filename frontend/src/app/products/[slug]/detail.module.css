@@ -1,0 +1,219 @@
+.breadcrumb {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin-bottom: var(--space-xl);
+}
+
+.breadcrumb a {
+  color: var(--text-secondary);
+}
+
+.breadcrumb a:hover {
+  color: var(--primary);
+}
+
+.breadcrumb span {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.productContainer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3xl);
+  background: white;
+  padding: var(--space-2xl);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+}
+
+.mainImage {
+  aspect-ratio: 1;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mainImage img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.placeholderImg {
+  font-size: 8rem;
+  opacity: 0.5;
+}
+
+.title {
+  font-size: 2.2rem;
+  color: var(--text-primary);
+  margin-bottom: var(--space-xs);
+}
+
+.priceRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: var(--space-md);
+}
+
+.price {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.unit {
+  color: var(--text-muted);
+  font-size: 1rem;
+}
+
+.statusRow {
+  display: flex;
+  gap: 12px;
+  margin-bottom: var(--space-lg);
+  padding-bottom: var(--space-lg);
+  border-bottom: 1px solid var(--bg-secondary);
+}
+
+.description {
+  font-size: 1.1rem;
+  color: var(--text-secondary);
+  line-height: 1.8;
+  margin-bottom: var(--space-xl);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-md);
+  margin-bottom: var(--space-xl);
+  /* Three controls now share this row (quantity, add to cart, save for later).
+     Wrapping keeps the primary button at a usable width on a narrow desktop
+     instead of letting it be squeezed by the two beside it. */
+  flex-wrap: wrap;
+}
+
+.quantityPicker {
+  display: flex;
+  align-items: center;
+  border: 2px solid var(--bg-secondary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  height: 54px;
+}
+
+.quantityPicker button {
+  width: 45px;
+  height: 100%;
+  background: var(--bg-secondary);
+  font-size: 1.2rem;
+  font-weight: bold;
+  color: var(--text-primary);
+  transition: background 0.2s;
+}
+
+.quantityPicker button:hover:not(:disabled) {
+  background: var(--secondary-light);
+}
+
+.quantityPicker button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.quantityPicker input {
+  width: 60px;
+  height: 100%;
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: bold;
+  border: none;
+  pointer-events: none;
+}
+
+.addBtn {
+  flex-grow: 1;
+}
+
+/* Save-for-later. Never wraps its own label — "♡ Save for later" breaking across
+   two lines next to a 54px-tall button looks like a layout bug. */
+.wishBtn {
+  white-space: nowrap;
+}
+
+.features {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: var(--space-lg);
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.feature {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+}
+
+.relatedSection {
+  margin-top: var(--space-3xl);
+  padding-top: var(--space-3xl);
+  border-top: 1px solid rgba(0,0,0,0.1);
+}
+
+@media (max-width: 900px) {
+  .productContainer {
+    grid-template-columns: 1fr;
+    padding: var(--space-lg);
+  }
+}
+
+@media (max-width: 480px) {
+  .actions {
+    flex-direction: column;
+  }
+}
+
+/* --- the rating line under the product title ----------------------------- */
+
+.ratingLine {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 10px;
+  font-size: 0.9rem;
+  text-decoration: none;
+  color: var(--text-secondary, #4A4A6A);
+}
+
+.ratingLine:hover {
+  text-decoration: underline;
+}
+
+.ratingStars {
+  color: var(--secondary, #D4A843);
+  letter-spacing: 1px;
+}
+
+/* The unfilled remainder of the five stars, so the row is always five wide and
+   the score reads at a glance instead of needing to be counted. */
+.ratingStarsOff {
+  color: #d8d8d8;
+}
+
+.ratingValue {
+  font-weight: 700;
+  color: var(--text-primary, #1A1A2E);
+}
+
+.ratingCount {
+  color: var(--text-muted, #8A8AAA);
+}

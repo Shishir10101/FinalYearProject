@@ -1,0 +1,21 @@
+/* DomainManager — the list/form/delete shell shared by kits and rituals.
+ *
+ * Only what this component owns. The table, badges, buttons, notices, fields and
+ * modal all come from globals.css, which is why this file is short.
+ *
+ * The expanded item panel is styled by the global `.table-panel` rule instead of
+ * here: it has to override `.table-wrap`'s pinned-first-column and nowrap
+ * behaviour, and a module class cannot win that specificity fight.
+ */
+
+.blurb {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-gray);
+}
+
+.itemHint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-gray);
+}

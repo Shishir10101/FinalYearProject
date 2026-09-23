@@ -1,0 +1,112 @@
+.hero {
+  position: relative;
+  background: linear-gradient(135deg, var(--bg-card) 0%, rgba(196, 30, 58, 0.05) 100%);
+  border-radius: var(--radius-xl);
+  padding: var(--space-3xl);
+  text-align: center;
+  margin-bottom: var(--space-3xl);
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.02);
+  border: 1px solid rgba(196, 30, 58, 0.1);
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(circle, rgba(212, 168, 67, 0.08) 0%, transparent 50%);
+  animation: rotate 20s linear infinite;
+  z-index: 0;
+  pointer-events: none;
+}
+
+@keyframes rotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.heroContent {
+  position: relative;
+  z-index: 1;
+}
+
+.festivalTags {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-bottom: var(--space-2xl);
+}
+
+.festivalTag {
+  background: white;
+  padding: 12px 24px;
+  border-radius: 50px;
+  font-size: 1.05rem;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.05);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(212, 168, 67, 0.2);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.festivalTag:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.08);
+  border-color: var(--secondary);
+}
+
+.festivalTagIcon {
+  font-size: 1.5rem;
+}
+
+.tagline {
+  color: var(--primary);
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  font-size: 0.9rem;
+  margin-bottom: var(--space-sm);
+  display: block;
+}
+
+.title {
+  font-size: 3rem;
+  color: var(--text-primary);
+  margin-bottom: var(--space-sm);
+  font-family: var(--font-heading);
+}
+
+.subtitle {
+  font-size: 1.2rem;
+  color: var(--text-secondary);
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.emptyState {
+  text-align: center;
+  padding: var(--space-3xl);
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.emptyIcon {
+  font-size: 4rem;
+  display: block;
+  margin-bottom: var(--space-lg);
+  opacity: 0.5;
+}
+
+/* The card-level styles (urgency badge, reason callout) now live in
+   components/ProductCard.module.css, so the recommendations grid and the
+   catalogue render the identical card. */
+
+.modelNote {
+  font-style: italic;
+}

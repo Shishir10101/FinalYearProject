@@ -1,0 +1,133 @@
+/* ItemManager — the item list of a kit or a ritual.
+ *
+ * Only the pieces this component owns. Anything that already exists as a global
+ * (table, badge, btn, notice, field) is reused rather than redefined here, which
+ * is why this file is short.
+ */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.summary {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--text-gray);
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-gray);
+}
+
+/* --- the add-a-product picker --- */
+
+.picker {
+  position: relative;
+  padding: 12px;
+  background: var(--bg-main);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.pickerLabel {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+
+.results {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.result {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.result:hover:not(:disabled) {
+  background: var(--bg-card);
+}
+
+.result:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.resultName {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dark);
+}
+
+.resultMeta {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-gray);
+}
+
+/* --- the item table --- */
+
+.empty {
+  margin: 0;
+  padding: 18px;
+  background: var(--bg-main);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-gray);
+  text-align: center;
+}
+
+.qty {
+  width: 64px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dark);
+  cursor: pointer;
+}
